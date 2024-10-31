@@ -87,3 +87,19 @@ class FluxMultiControlNetManager(MultiControlNetManager):
                 res_stack = [i + j for i, j in zip(res_stack, res_stack_)]
                 single_res_stack = [i + j for i, j in zip(single_res_stack, single_res_stack_)]
         return res_stack, single_res_stack
+
+class FluxMaskControlNetManager(FluxMultiControlNetManager):
+    def __call__(self, conditionings, controlnet_prompts, **kwargs):
+        res_stack, single_res_stack = None, None
+        for processor, conditioning, controlnet_prompt, model, scale in zip(self.processors, conditionings, controlnet_prompts, self.models, self.scales):
+            kwargs.update({**controlnet_prompt})
+            res_stack_, single_res_stack_ = model(controlnet_conditioning=conditioning, processor_id=processor.processor_id, **kwargs)
+            res_stack_ = [res * scale for res in res_stack_]
+            single_res_stack_ = [res * scale for res in single_res_stack_]
+            if res_stack is None:
+                res_stack = res_stack_
+                single_res_stack = single_res_stack_
+            else:
+                res_stack = [i + j for i, j in zip(res_stack, res_stack_)]
+                single_res_stack = [i + j for i, j in zip(single_res_stack, single_res_stack_)]
+        return res_stack, single_res_stack

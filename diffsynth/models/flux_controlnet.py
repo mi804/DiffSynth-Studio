@@ -63,6 +63,7 @@ class FluxControlNet(torch.nn.Module):
         timestep, prompt_emb, pooled_prompt_emb, guidance, text_ids, image_ids=None,
         processor_id=None,
         tiled=False, tile_size=128, tile_stride=64,
+        use_gradient_checkpointing=False,
         **kwargs
     ):
         if image_ids is None:
@@ -85,15 +86,34 @@ class FluxControlNet(torch.nn.Module):
         controlnet_conditioning = self.patchify(controlnet_conditioning) # Different from FluxDiT
         hidden_states = hidden_states + self.controlnet_x_embedder(controlnet_conditioning) # Different from FluxDiT
 
+        def create_custom_forward(module):
+            def custom_forward(*inputs):
+                return module(*inputs)
+            return custom_forward
+
         controlnet_res_stack = []
         for block, controlnet_block in zip(self.blocks, self.controlnet_blocks):
-            hidden_states, prompt_emb = block(hidden_states, prompt_emb, conditioning, image_rotary_emb)
+            if self.training and use_gradient_checkpointing:
+                hidden_states, prompt_emb = torch.utils.checkpoint.checkpoint(
+                    create_custom_forward(block),
+                    hidden_states, prompt_emb, conditioning, image_rotary_emb,
+                    use_reentrant=False,
+                )
+            else:
+                hidden_states, prompt_emb = block(hidden_states, prompt_emb, conditioning, image_rotary_emb)
             controlnet_res_stack.append(controlnet_block(hidden_states))
 
         controlnet_single_res_stack = []
         hidden_states = torch.cat([prompt_emb, hidden_states], dim=1)
         for block, controlnet_block in zip(self.single_blocks, self.controlnet_single_blocks):
-            hidden_states, prompt_emb = block(hidden_states, prompt_emb, conditioning, image_rotary_emb)
+            if self.training and use_gradient_checkpointing:
+                hidden_states, prompt_emb = torch.utils.checkpoint.checkpoint(
+                    create_custom_forward(block),
+                    hidden_states, prompt_emb, conditioning, image_rotary_emb,
+                    use_reentrant=False,
+                )
+            else:
+                hidden_states, prompt_emb = block(hidden_states, prompt_emb, conditioning, image_rotary_emb)
             controlnet_single_res_stack.append(controlnet_block(hidden_states[:, prompt_emb.shape[1]:]))
 
         controlnet_res_stack = self.align_res_stack_to_original_blocks(controlnet_res_stack, 19, hidden_states[:, prompt_emb.shape[1]:])
