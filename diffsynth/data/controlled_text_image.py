@@ -139,21 +139,24 @@ class ControlledTextImageDataset(torch.utils.data.Dataset):
                 text = self.text[data_id]
                 image = Image.open(self.path[data_id]).convert("RGB")
                 width, height = image.size
-                image = self.image_processor(image)
 
                 # process entities
                 entities = self.entities[data_id]
-                selected_entity = [random.randint(0, len(entities)-1)] if self.single_mask else list(range(len(entities)))
+                selected_entity = [] if self.single_mask else list(range(len(entities)))
                 metas = []
                 for i in selected_entity:
                     entity = entities[i]
                     bbox = entity["bbox"]
                     x_min, y_min, x_max, y_max = bbox
+                    if x_max - x_min < 0.05 or y_max - y_min < 0.05:
+                        raise Exception("bbox too small")
                     x_min, y_min, x_max, y_max = int(x_min * width), int(y_min * height), int(x_max * width), int(y_max * height)
                     mask = torch.zeros((3, height, width))
                     mask[:, y_min:y_max, x_min:x_max] = 1.0
                     mask = self.mask_processor(mask)
                     metas.append({"text": entity["entity"], "mask": mask})
+
+                image = self.image_processor(image)
             except Exception as e:
                 print(f"Error: {e}")
                 continue

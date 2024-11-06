@@ -38,7 +38,7 @@ class LightningModelForFluxControlNet(pl.LightningModule):
         self.pipe.scheduler.set_timesteps(1000, training=True)
 
         self.freeze_parameters()
-        self.controlnet = FluxControlNet(num_joint_blocks=3, num_single_blocks=5)
+        self.controlnet = FluxControlNet(num_joint_blocks=5, num_single_blocks=1)
         self.init_controlnet()
 
         self.learning_rate = learning_rate
@@ -57,6 +57,7 @@ class LightningModelForFluxControlNet(pl.LightningModule):
             'pooled_text_embedder': 'pooled_text_embedder',
             'context_embedder': 'context_embedder',
             'x_embedder': 'x_embedder',
+            'controlprompt_embedder': 'context_embedder',
         }
         # direct loading
         for controlnet_module_name, dit_module_name in named_module_mapping.items():
@@ -78,6 +79,7 @@ class LightningModelForFluxControlNet(pl.LightningModule):
 
         # zero initialization
         self.linear_zero_init(self.controlnet.controlnet_x_embedder)
+        self.linear_zero_init(self.controlnet.crossattn.to_out)
         for module in self.controlnet.controlnet_blocks:
             self.linear_zero_init(module)
         for module in self.controlnet.controlnet_single_blocks:
@@ -103,7 +105,7 @@ class LightningModelForFluxControlNet(pl.LightningModule):
         noise = torch.randn_like(latents)
         timestep_id = torch.randint(0, self.pipe.scheduler.num_train_timesteps, (1,))
         timestep = self.pipe.scheduler.timesteps[timestep_id].to(self.device)
-        extra_input = self.pipe.prepare_extra_input(latents)
+        extra_input = self.pipe.prepare_extra_input(latents, guidance=3.5)
         noisy_latents = self.pipe.scheduler.add_noise(latents, noise, timestep)
         training_target = self.pipe.scheduler.training_target(latents, noise, timestep)
 
@@ -116,8 +118,9 @@ class LightningModelForFluxControlNet(pl.LightningModule):
         controlnet_res_stack, controlnet_single_res_stack = self.controlnet(
             noisy_latents,
             control_image,
+            controlnet_prompt_emb,
             timestep,
-            **controlnet_prompt_emb,
+            **prompt_emb,
             **extra_input,
             use_gradient_checkpointing=self.use_gradient_checkpointing,
         )

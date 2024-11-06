@@ -92,7 +92,7 @@ class FluxMaskControlNetManager(FluxMultiControlNetManager):
     def __call__(self, conditionings, controlnet_prompts, **kwargs):
         res_stack, single_res_stack = None, None
         for processor, conditioning, controlnet_prompt, model, scale in zip(self.processors, conditionings, controlnet_prompts, self.models, self.scales):
-            kwargs.update({**controlnet_prompt})
+            kwargs.update({'controlnet_prompt_emb': controlnet_prompt})
             res_stack_, single_res_stack_ = model(controlnet_conditioning=conditioning, processor_id=processor.processor_id, **kwargs)
             res_stack_ = [res * scale for res in res_stack_]
             single_res_stack_ = [res * scale for res in single_res_stack_]

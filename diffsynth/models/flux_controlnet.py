@@ -2,7 +2,7 @@ import torch
 from einops import rearrange, repeat
 from .flux_dit import RoPEEmbedding, TimestepEmbeddings, FluxJointTransformerBlock, FluxSingleTransformerBlock
 from .utils import hash_state_dict_keys
-
+from .attention import Attention
 
 
 class FluxControlNet(torch.nn.Module):
@@ -13,8 +13,15 @@ class FluxControlNet(torch.nn.Module):
         self.guidance_embedder = None if disable_guidance_embedder else TimestepEmbeddings(256, 3072)
         self.pooled_text_embedder = torch.nn.Sequential(torch.nn.Linear(768, 3072), torch.nn.SiLU(), torch.nn.Linear(3072, 3072))
         self.context_embedder = torch.nn.Linear(4096, 3072)
-        self.x_embedder = torch.nn.Linear(64, 3072)
+        
+        # ControlNet prompt embedder
+        self.controlprompt_embedder = torch.nn.Linear(4096, 3072)
+        # Cross-Attn
+        self.masknorm = torch.nn.LayerNorm(3072, elementwise_affine=True)
+        self.promptnorm = torch.nn.LayerNorm(3072, elementwise_affine=True)
+        self.crossattn = Attention(q_dim=3072, kv_dim=3072, num_heads=24, head_dim=3072//24, bias_out=True)
 
+        self.x_embedder = torch.nn.Linear(64, 3072)
         self.blocks = torch.nn.ModuleList([FluxJointTransformerBlock(3072, 24) for _ in range(num_joint_blocks)])
         self.single_blocks = torch.nn.ModuleList([FluxSingleTransformerBlock(3072, 24) for _ in range(num_single_blocks)])
 
@@ -60,6 +67,7 @@ class FluxControlNet(torch.nn.Module):
         self,
         hidden_states,
         controlnet_conditioning,
+        controlnet_prompt_emb,
         timestep, prompt_emb, pooled_prompt_emb, guidance, text_ids, image_ids=None,
         processor_id=None,
         tiled=False, tile_size=128, tile_stride=64,
@@ -84,7 +92,16 @@ class FluxControlNet(torch.nn.Module):
         hidden_states = self.patchify(hidden_states)
         hidden_states = self.x_embedder(hidden_states)
         controlnet_conditioning = self.patchify(controlnet_conditioning) # Different from FluxDiT
-        hidden_states = hidden_states + self.controlnet_x_embedder(controlnet_conditioning) # Different from FluxDiT
+        controlnet_conditioning = self.controlnet_x_embedder(controlnet_conditioning)
+
+        # cross attention
+        controlnet_prompt_condition = self.promptnorm(self.controlprompt_embedder(controlnet_prompt_emb['prompt_emb']))
+        normed_controlnet_conditioning = self.masknorm(controlnet_conditioning)
+        attn_out = self.crossattn(normed_controlnet_conditioning, controlnet_prompt_condition)
+        # controlnet_conditioning = attn_out + controlnet_conditioning
+        controlnet_conditioning = attn_out
+
+        hidden_states = hidden_states + controlnet_conditioning # Different from FluxDiT
 
         def create_custom_forward(module):
             def custom_forward(*inputs):
