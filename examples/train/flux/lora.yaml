@@ -1,0 +1,24 @@
+pretrained_text_encoder_path: t2i_models/FLUX/FLUX.1-dev/text_encoder/model.safetensors
+pretrained_text_encoder_2_path: t2i_models/FLUX/FLUX.1-dev/text_encoder_2
+pretrained_dit_path: t2i_models/FLUX/FLUX.1-dev/flux1-dev.safetensors
+pretrained_vae_path: t2i_models/FLUX/FLUX.1-dev/ae.safetensors
+dataset_path: /mnt/nas1/zhanghong/DiffSynth-Studio/data/laion/diffusion_db/caption-bboxbyqwen.jsonl
+# dataset_path: data/laion/datajuicer_output_hr/qwen_text.jsonl
+output_path: workdirs/flux-controlnet
+height: 1024
+width: 1024
+center_crop: True
+random_flip: False
+dataloader_num_workers: 12
+learning_rate: 0.0001
+use_gradient_checkpointing: True
+accumulate_grad_batches: 8
+batch_size: 1
+training_strategy: 'deepspeed_stage_2'
+precision: 'bf16'
+steps_per_epoch: 10000
+max_epochs: 10000
+max_mask: 5
+drop_prob: 0.
+lora_rank: 64
+lora_alpha: 64

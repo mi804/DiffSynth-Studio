@@ -1,0 +1,393 @@
+from ..models import ModelManager, FluxDiT, FluxTextEncoder1, FluxTextEncoder2, FluxVAEDecoder, FluxVAEEncoder
+from ..controlnets import FluxMultiControlNetManager, ControlNetUnit, ControlNetConfigUnit, Annotator
+from ..prompters import FluxPrompter
+from ..schedulers import FlowMatchScheduler
+from .base import BasePipeline
+from typing import List
+import torch
+from tqdm import tqdm
+import numpy as np
+from PIL import Image
+from ..models.tiler import FastTileWorker
+from PIL import ImageDraw, ImageFont
+
+def visualize_masks(image, masks, mask_prompts):
+    # Create a blank image for overlays
+    overlay = Image.new('RGBA', image.size, (0, 0, 0, 0))
+    
+    # Generate random colors for each mask
+    colors = [
+        (np.random.randint(0, 256), np.random.randint(0, 256), np.random.randint(0, 256), 80)  # 255 for full opacity
+        for _ in masks
+    ]
+    
+    # Font settings
+    try:
+        font = ImageFont.truetype("arial", 20)  # Adjust as needed
+    except IOError:
+        font = ImageFont.load_default(20)
+    
+    # Overlay each mask onto the overlay image
+    for mask, mask_prompt, color in zip(masks, mask_prompts, colors):
+        # Convert mask to RGBA mode
+        mask_rgba = mask.convert('RGBA')
+        mask_data = mask_rgba.getdata()
+        new_data = [(color if item[:3] == (255, 255, 255) else (0, 0, 0, 0)) for item in mask_data]
+        mask_rgba.putdata(new_data)
+
+        # Draw the mask prompt text on the mask
+        draw = ImageDraw.Draw(mask_rgba)
+        mask_bbox = mask.getbbox()  # Get the bounding box of the mask
+        if mask_bbox is not None:
+            text_position = (mask_bbox[0] + 10, mask_bbox[1] + 10)  # Adjust text position based on mask position
+            draw.text(text_position, mask_prompt, fill=(255, 255, 255, 255), font=font)
+
+        # Alpha composite the overlay with this mask
+        overlay = Image.alpha_composite(overlay, mask_rgba)
+    
+    # Composite the overlay onto the original image
+    result = Image.alpha_composite(image.convert('RGBA'), overlay)
+    return result
+    
+class FluxImageLoraInpaintPipeline(BasePipeline):
+
+    def __init__(self, device="cuda", torch_dtype=torch.float16):
+        super().__init__(device=device, torch_dtype=torch_dtype)
+        self.scheduler = FlowMatchScheduler()
+        self.prompter = FluxPrompter()
+        # models
+        self.text_encoder_1: FluxTextEncoder1 = None
+        self.text_encoder_2: FluxTextEncoder2 = None
+        self.dit: FluxDiT = None
+        self.vae_decoder: FluxVAEDecoder = None
+        self.vae_encoder: FluxVAEEncoder = None
+        self.controlnet: FluxMultiControlNetManager = None
+        self.model_names = ['text_encoder_1', 'text_encoder_2', 'dit', 'vae_decoder', 'vae_encoder', 'controlnet']
+
+
+    def denoising_model(self):
+        return self.dit
+
+
+    def fetch_models(self, model_manager: ModelManager, controlnet_config_units: List[ControlNetConfigUnit]=[], prompt_refiner_classes=[], prompt_extender_classes=[]):
+        self.text_encoder_1 = model_manager.fetch_model("flux_text_encoder_1")
+        self.text_encoder_2 = model_manager.fetch_model("flux_text_encoder_2")
+        self.dit = model_manager.fetch_model("flux_dit")
+        self.vae_decoder = model_manager.fetch_model("flux_vae_decoder")
+        self.vae_encoder = model_manager.fetch_model("flux_vae_encoder")
+        self.prompter.fetch_models(self.text_encoder_1, self.text_encoder_2)
+        self.prompter.load_prompt_refiners(model_manager, prompt_refiner_classes)
+        self.prompter.load_prompt_extenders(model_manager, prompt_extender_classes)
+
+        # ControlNets
+        controlnet_units = []
+        for config in controlnet_config_units:
+            controlnet_unit = ControlNetUnit(
+                Annotator(config.processor_id, device=self.device, skip_processor=config.skip_processor),
+                model_manager.fetch_model("flux_controlnet", config.model_path),
+                config.scale
+            )
+            controlnet_units.append(controlnet_unit)
+        self.controlnet = FluxMultiControlNetManager(controlnet_units)
+
+
+    @staticmethod
+    def from_model_manager(model_manager: ModelManager, controlnet_config_units: List[ControlNetConfigUnit]=[], prompt_refiner_classes=[], prompt_extender_classes=[], device=None):
+        pipe = FluxImageLoraInpaintPipeline(
+            device=model_manager.device if device is None else device,
+            torch_dtype=model_manager.torch_dtype,
+        )
+        pipe.fetch_models(model_manager, controlnet_config_units, prompt_refiner_classes, prompt_extender_classes)
+        return pipe
+    
+
+    def encode_image(self, image, tiled=False, tile_size=64, tile_stride=32):
+        latents = self.vae_encoder(image, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride)
+        return latents
+    
+
+    def decode_image(self, latent, tiled=False, tile_size=64, tile_stride=32):
+        image = self.vae_decoder(latent.to(self.device), tiled=tiled, tile_size=tile_size, tile_stride=tile_stride)
+        image = self.vae_output_to_image(image)
+        return image
+    
+
+    def encode_prompt(self, prompt, positive=True, t5_sequence_length=512):
+        prompt_emb, pooled_prompt_emb, text_ids = self.prompter.encode_prompt(
+            prompt, device=self.device, positive=positive, t5_sequence_length=t5_sequence_length
+        )
+        return {"prompt_emb": prompt_emb, "pooled_prompt_emb": pooled_prompt_emb, "text_ids": text_ids}
+    
+
+    def prepare_extra_input(self, latents=None, guidance=1.0):
+        latent_image_ids = self.dit.prepare_image_ids(latents)
+        guidance = torch.Tensor([guidance] * latents.shape[0]).to(device=latents.device, dtype=latents.dtype)
+        return {"image_ids": latent_image_ids, "guidance": guidance}
+    
+
+    def apply_controlnet_mask_on_latents(self, latents, mask):
+        mask = (self.preprocess_image(mask) + 1) / 2
+        mask = mask.mean(dim=1, keepdim=True)
+        mask = mask.to(dtype=self.torch_dtype, device=self.device)
+        mask = 1 - torch.nn.functional.interpolate(mask, size=latents.shape[-2:])
+        latents = torch.concat([latents, mask], dim=1)
+        return latents
+    
+
+    def apply_controlnet_mask_on_image(self, image, mask):
+        mask = mask.resize(image.size)
+        mask = self.preprocess_image(mask).mean(dim=[0, 1])
+        image = np.array(image)
+        image[mask > 0] = 0
+        image = Image.fromarray(image)
+        return image
+    
+
+    def prepare_controlnet_input(self, controlnet_image, controlnet_inpaint_mask, tiler_kwargs):
+        if isinstance(controlnet_image, Image.Image):
+            controlnet_image = [controlnet_image] * len(self.controlnet.processors)
+
+        controlnet_frames = []
+        for i in range(len(self.controlnet.processors)):
+            # image annotator
+            image = self.controlnet.process_image(controlnet_image[i], processor_id=i)[0]
+            if controlnet_inpaint_mask is not None and self.controlnet.processors[i].processor_id == "inpaint":
+                image = self.apply_controlnet_mask_on_image(image, controlnet_inpaint_mask)
+
+            # image to tensor
+            image = self.preprocess_image(image).to(device=self.device, dtype=self.torch_dtype)
+
+            # vae encoder
+            image = self.encode_image(image, **tiler_kwargs)
+            if controlnet_inpaint_mask is not None and self.controlnet.processors[i].processor_id == "inpaint":
+                image = self.apply_controlnet_mask_on_latents(image, controlnet_inpaint_mask)
+            
+            # store it
+            controlnet_frames.append(image)
+        return controlnet_frames
+
+
+    def merge_latents(self, input_latent, inpaint_latent, fg_mask, bg_mask, background_weight=0.):
+        weight = torch.ones_like(input_latent)
+        input_latent[fg_mask] = inpaint_latent[fg_mask]
+        input_latent[bg_mask] += inpaint_latent[bg_mask] * background_weight
+        weight[bg_mask] += background_weight
+        input_latent /= weight
+        return input_latent
+    
+    def preprocess_masks(self, masks, height, width, dim):
+        out_masks = []
+        for mask in masks:
+            mask = self.preprocess_image(mask.resize((width, height), resample=Image.NEAREST)).mean(dim=1, keepdim=True) > 0
+            mask = mask.repeat(1, dim, 1, 1).to(device=self.device, dtype=self.torch_dtype)
+            out_masks.append(mask)
+        return out_masks
+
+    @torch.no_grad()
+    def __call__(
+        self,
+        prompt,
+        local_prompts=None,
+        masks=None,        
+        mask_scales=None,
+        negative_prompt="",
+        cfg_scale=1.0,
+        embedded_guidance=3.5,
+        input_image=None,
+        denoising_strength=1.0,
+        height=1024,
+        width=1024,
+        num_inference_steps=30,
+        t5_sequence_length=512,
+        tiled=False,
+        tile_size=128,
+        tile_stride=64,
+        seed=None,
+        progress_bar_cmd=tqdm,
+        progress_bar_st=None,
+        return_with_mask=False,
+        background_weight=0.0,
+    ):
+        # Tiler parameters
+        tiler_kwargs = {"tiled": tiled, "tile_size": tile_size, "tile_stride": tile_stride}
+        if return_with_mask:
+            from copy import deepcopy
+            local_prompts_copy = deepcopy(local_prompts)
+            mask_copy = deepcopy(masks)
+
+        # Prepare scheduler
+        self.scheduler.set_timesteps(num_inference_steps, denoising_strength)
+
+        # Prepare latent tensors
+        if input_image is not None:
+            self.load_models_to_device(['vae_encoder'])
+            image = self.preprocess_image(input_image).to(device=self.device, dtype=self.torch_dtype)
+            input_latents = self.encode_image(image, **tiler_kwargs)
+            noise = self.generate_noise((1, 16, height//8, width//8), seed=seed, device=self.device, dtype=self.torch_dtype)
+            latents = self.scheduler.add_noise(input_latents, noise, timestep=self.scheduler.timesteps[0])
+        else:
+            latents = self.generate_noise((1, 16, height//8, width//8), seed=seed, device=self.device, dtype=self.torch_dtype)
+
+        # Extend prompt
+        self.load_models_to_device(['text_encoder_1', 'text_encoder_2'])
+        prompt, local_prompts, masks, mask_scales = self.extend_prompt(prompt, local_prompts, masks, mask_scales)
+        if len(masks) == 0:
+            masks = None
+            local_prompts = None
+        # Encode prompts
+        prompt_emb_posi = self.encode_prompt(prompt, t5_sequence_length=t5_sequence_length)
+        if cfg_scale != 1.0:
+            prompt_emb_nega = self.encode_prompt(negative_prompt, positive=False, t5_sequence_length=t5_sequence_length)
+
+        if masks:
+            # for i in range(len(masks)):
+            #     masks[i].save(f"inpaint/mask{i}.png")
+            from copy import deepcopy
+            masks_ = mask_copy = deepcopy(masks)
+            fg_masks = torch.cat([self.preprocess_image(mask.resize((width//8, height//8))).mean(dim=1, keepdim=True) for mask in masks_])
+            fg_masks = (fg_masks > 0).float()
+            fg_mask = fg_masks.sum(dim=0, keepdim=True).repeat(1, 16, 1, 1) > 0
+            bg_mask = ~fg_mask
+
+            masks = self.preprocess_masks(masks, height//8, width//8, 1)
+            masks = torch.cat(masks, dim=0).unsqueeze(0) # b, n, c, h, w， n为mask数量
+            local_prompts = self.encode_prompt(local_prompts, t5_sequence_length=t5_sequence_length)['prompt_emb'].unsqueeze(0)
+
+        # Extra input
+        extra_input = self.prepare_extra_input(latents, guidance=embedded_guidance)
+        # Denoise
+        self.load_models_to_device(['dit', 'controlnet'])
+        for progress_id, timestep in enumerate(progress_bar_cmd(self.scheduler.timesteps)):
+            timestep = timestep.unsqueeze(0).to(self.device)
+
+            noise_pred_posi = self.dit(latents, timestep, **prompt_emb_posi, **tiler_kwargs, **extra_input, local_prompts=local_prompts, masks=masks)
+            
+            # pre merge
+            expect_noise = (latents - input_latents) / self.scheduler.sigmas[progress_id]
+            noise_pred_posi = self.merge_latents(expect_noise, noise_pred_posi, fg_mask, bg_mask, background_weight)
+            # pre merge
+
+            if cfg_scale != 1.0:
+                noise_pred_nega = self.dit(latents, timestep, **prompt_emb_nega, **tiler_kwargs, **extra_input, local_prompts=local_prompts, masks=masks)
+                noise_pred = noise_pred_nega + cfg_scale * (noise_pred_posi - noise_pred_nega)
+            else:
+                noise_pred = noise_pred_posi
+
+            latents = self.scheduler.step(noise_pred, self.scheduler.timesteps[progress_id], latents)
+            
+            # post merge
+            # origin_latents = self.scheduler.add_noise(input_latents, noise, timestep=self.scheduler.timesteps[progress_id+1]) if progress_id < len(self.scheduler.timesteps)-1 else input_latents
+            # latents = self.merge_latents(origin_latents, latents, fg_mask, bg_mask, background_weight)
+            # post merge
+
+            # UI
+            if progress_bar_st is not None:
+                progress_bar_st.progress(progress_id / len(self.scheduler.timesteps))
+        
+        # Decode image
+        self.load_models_to_device(['vae_decoder'])
+        image = self.decode_image(latents, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride)
+        if return_with_mask and mask_copy:
+            image = visualize_masks(image, mask_copy, local_prompts_copy)
+
+        # Offload all models
+        self.load_models_to_device([])
+        return image
+
+
+
+def lets_dance_flux(
+    dit: FluxDiT,
+    controlnet: FluxMultiControlNetManager = None,
+    hidden_states=None,
+    timestep=None,
+    prompt_emb=None,
+    pooled_prompt_emb=None,
+    guidance=None,
+    text_ids=None,
+    image_ids=None,
+    controlnet_frames=None,
+    tiled=False,
+    tile_size=128,
+    tile_stride=64,
+    **kwargs
+):
+    if tiled:
+        def flux_forward_fn(hl, hr, wl, wr):
+            return lets_dance_flux(
+                dit=dit,
+                controlnet=controlnet,
+                hidden_states=hidden_states[:, :, hl: hr, wl: wr],
+                timestep=timestep,
+                prompt_emb=prompt_emb,
+                pooled_prompt_emb=pooled_prompt_emb,
+                guidance=guidance,
+                text_ids=text_ids,
+                image_ids=None,
+                controlnet_frames=[f[:, :, hl: hr, wl: wr] for f in controlnet_frames],
+                tiled=False,
+                **kwargs
+            )
+        return FastTileWorker().tiled_forward(
+            flux_forward_fn,
+            hidden_states,
+            tile_size=tile_size,
+            tile_stride=tile_stride,
+            tile_device=hidden_states.device,
+            tile_dtype=hidden_states.dtype
+        )
+
+
+    # ControlNet
+    if controlnet is not None and controlnet_frames is not None:
+        controlnet_extra_kwargs = {
+            "hidden_states": hidden_states,
+            "timestep": timestep,
+            "prompt_emb": prompt_emb,
+            "pooled_prompt_emb": pooled_prompt_emb,
+            "guidance": guidance,
+            "text_ids": text_ids,
+            "image_ids": image_ids,
+            "tiled": tiled,
+            "tile_size": tile_size,
+            "tile_stride": tile_stride,
+        }
+        controlnet_res_stack, controlnet_single_res_stack = controlnet(
+            controlnet_frames, **controlnet_extra_kwargs
+        )
+
+    if image_ids is None:
+        image_ids = dit.prepare_image_ids(hidden_states)
+    
+    conditioning = dit.time_embedder(timestep, hidden_states.dtype) + dit.pooled_text_embedder(pooled_prompt_emb)
+    if dit.guidance_embedder is not None:
+        guidance = guidance * 1000
+        conditioning = conditioning + dit.guidance_embedder(guidance, hidden_states.dtype)
+    prompt_emb = dit.context_embedder(prompt_emb)
+    image_rotary_emb = dit.pos_embedder(torch.cat((text_ids, image_ids), dim=1))
+
+    height, width = hidden_states.shape[-2:]
+    hidden_states = dit.patchify(hidden_states)
+    hidden_states = dit.x_embedder(hidden_states)
+    
+    # Joint Blocks
+    for block_id, block in enumerate(dit.blocks):
+        hidden_states, prompt_emb = block(hidden_states, prompt_emb, conditioning, image_rotary_emb)
+        # ControlNet
+        if controlnet is not None and controlnet_frames is not None:
+            hidden_states = hidden_states + controlnet_res_stack[block_id]
+
+    # Single Blocks
+    hidden_states = torch.cat([prompt_emb, hidden_states], dim=1)
+    for block_id, block in enumerate(dit.single_blocks):
+        hidden_states, prompt_emb = block(hidden_states, prompt_emb, conditioning, image_rotary_emb)
+        # ControlNet
+        if controlnet is not None and controlnet_frames is not None:
+            hidden_states[:, prompt_emb.shape[1]:] = hidden_states[:, prompt_emb.shape[1]:] + controlnet_single_res_stack[block_id]
+    hidden_states = hidden_states[:, prompt_emb.shape[1]:]
+
+    hidden_states = dit.final_norm_out(hidden_states, conditioning)
+    hidden_states = dit.final_proj_out(hidden_states)
+    hidden_states = dit.unpatchify(hidden_states, height, width)
+
+    return hidden_states

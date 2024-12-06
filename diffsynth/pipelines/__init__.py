@@ -10,3 +10,5 @@ from .cog_video import CogVideoPipeline
 from .pipeline_runner import SDVideoPipelineRunner
 KolorsImagePipeline = SDXLImagePipeline
 from .flux_image_c import FluxImageCPipeline
+from .flux_image_lora import FluxImageLoraPipeline
+from .flux_image_lora_inpaint import FluxImageLoraInpaintPipeline
