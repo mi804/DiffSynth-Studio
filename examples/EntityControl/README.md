@@ -83,3 +83,9 @@ Demonstration of the entity transfer results with EliGen and In-Context LoRA, se
 |Entity to Transfer|Transfer Target Image|Transfer Example 1|Transfer Example 2|
 |-|-|-|-|
 |![source](https://github.com/user-attachments/assets/0d40ef22-0a09-420d-bd5a-bfb93120b60d)|![targe](https://github.com/user-attachments/assets/f6c58ef2-54c1-4d86-8429-dad2eb0e0685)|![result1](https://github.com/user-attachments/assets/05eed2e3-097d-40af-8aae-1e0c75051f32)|![result2](https://github.com/user-attachments/assets/54314d16-244b-411e-8a91-96c500efa5f5)|
+
+## Training Scripts for EliGen
+Download the [EliGen Train Set](https://www.modelscope.cn/datasets/DiffSynth-Studio/EliGenTrainSet) and run:
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python examples/train/flux/train_flux_lora_eligen.py --config examples/train/flux/eligen.yaml
+```
