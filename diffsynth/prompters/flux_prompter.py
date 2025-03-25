@@ -59,12 +59,15 @@ class FluxPrompter(BasePrompter):
         positive=True,
         device="cuda",
         t5_sequence_length=512,
+        clip_only=False
     ):
         prompt = self.process_prompt(prompt, positive=positive)
         
         # CLIP
         pooled_prompt_emb = self.encode_prompt_using_clip(prompt, self.text_encoder_1, self.tokenizer_1, 77, device)
-        
+        if clip_only:
+            return None, pooled_prompt_emb, None
+
         # T5
         prompt_emb = self.encode_prompt_using_t5(prompt, self.text_encoder_2, self.tokenizer_2, t5_sequence_length, device)
 
