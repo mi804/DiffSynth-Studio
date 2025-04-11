@@ -5,7 +5,7 @@ from ..data.qwen_visual_to_image import QwenVisual2Image
 from modelscope.hub.api import HubApi
 from ..models.utils import load_state_dict
 from diffsynth import ModelManager, FluxImagePipeline
-from transformers import get_cosine_schedule_with_warmup
+from transformers import get_cosine_schedule_with_warmup, get_constant_schedule_with_warmup
 
 
 
@@ -154,6 +154,10 @@ class FluxForQwen(pl.LightningModule):
             num_warmup_steps=warmup_steps,
             num_training_steps=total_steps,
         )
+        # scheduler = get_constant_schedule_with_warmup(
+        #     optimizer,
+        #     num_warmup_steps=warmup_steps,
+        # )
 
         # # 生成学习率数据
         # lrs = []
