@@ -40,9 +40,16 @@ class BitsAndBytesQuantBackend(QuantBackend):
         if not torch.cuda.is_available():
             raise RuntimeError("bitsandbytes 4bit quantization requires a CUDA device.")
 
+    def _is_8bit(self):
+        return bool(self.config.get("bnb_8bit", False))
+
     def capabilities(self):
+        # 4bit (nf4/fp4) round-trips through `Params4bit.from_prequantized`, so it is
+        # serializable. 8bit (`Linear8bitLt`) refuses to load a quantized checkpoint into a
+        # non-cuda-quantized module, which does not fit the meta-shell / disk-offload path,
+        # so we expose it as online-quant + dequantize only (not serializable here).
         return {
-            "is_serializable": True,
+            "is_serializable": not self._is_8bit(),
             "is_differentiable": True,
             "is_compileable": False,
             "requires_calibration": False,
@@ -53,11 +60,19 @@ class BitsAndBytesQuantBackend(QuantBackend):
             import bitsandbytes as bnb
         except ImportError:
             return ()
-        return (bnb.nn.Linear4bit,)
+        return (bnb.nn.Linear4bit, bnb.nn.Linear8bitLt)
+
+    def checkpoint_key_patterns(self):
+        if self._is_8bit():
+            return ("weight", "SCB", "weight_format", "bias")
+        return ("weight", "weight.", "bias")
 
     def create_quantized_linear(self, linear, compute_device=None, model_device=None):
         """The `meta` shell avoids allocating an fp weight; bnb quantizes while `Params4bit` moves to `compute_device`."""
         import bitsandbytes as bnb
+
+        if self._is_8bit():
+            return self._create_8bit_linear(linear, compute_device, model_device)
 
         compute_dtype = linear.weight.dtype
         if compute_device is None:
@@ -90,8 +105,41 @@ class BitsAndBytesQuantBackend(QuantBackend):
             quant_linear.bias = torch.nn.Parameter(linear.bias.data.to(device=compute_device), requires_grad=False)
         return quant_linear.to(device=model_device)
 
+    def _create_8bit_linear(self, linear, compute_device=None, model_device=None):
+        """LLM.int8() via `Linear8bitLt`; the int8 quantization happens when `Int8Params` moves to a CUDA device."""
+        import bitsandbytes as bnb
+        dev = torch.device(compute_device if compute_device is not None else linear.weight.device)
+        if dev.type != "cuda":
+            dev = torch.device("cuda")
+        with torch.device("meta"):
+            quant_linear = bnb.nn.Linear8bitLt(
+                linear.in_features,
+                linear.out_features,
+                bias=linear.bias is not None,
+                has_fp16_weights=False,
+                threshold=self.config.get("threshold", 6.0),
+            )
+        quant_linear.weight = bnb.nn.Int8Params(
+            # bnb quantizes inside the CPU->CUDA transition of `Int8Params`, so the data must
+            # start on the CPU; passing an already-CUDA tensor makes the `.to(dev)` below a
+            # no-op and leaves the layer silently unquantized in fp16.
+            linear.weight.data.contiguous().cpu(), requires_grad=False, has_fp16_weights=False,
+        )
+        if linear.bias is not None:
+            quant_linear.bias = torch.nn.Parameter(linear.bias.data, requires_grad=False)
+        quant_linear = quant_linear.to(dev)
+        if model_device is not None:
+            quant_linear = quant_linear.to(device=model_device)
+        return quant_linear
+
     def create_quantized_linear_shell(self, linear, compute_dtype):
         import bitsandbytes as bnb
+        if self._is_8bit():
+            # 8bit is not serializable through this framework (see `capabilities`), so the
+            # prequantized-load / disk-offload shell path does not apply.
+            raise NotImplementedError(
+                "bitsandbytes 8bit (Linear8bitLt) does not support the prequantized-load shell path."
+            )
         with torch.device("meta"):
             shell = bnb.nn.Linear4bit(
                 linear.in_features,
@@ -128,7 +176,18 @@ class BitsAndBytesQuantBackend(QuantBackend):
         if compute_device is not None:
             module = module.to(device=compute_device)
         weight = module.weight
-        fp_weight = bnb.functional.dequantize_4bit(weight.data, weight.quant_state).to(compute_dtype)
+        if self._is_8bit() or isinstance(module, bnb.nn.Linear8bitLt):
+            CB = weight.data
+            SCB = getattr(weight, "SCB", None)
+            if SCB is None:
+                SCB = getattr(getattr(module, "state", None), "SCB", None)
+            if SCB is None:
+                # SCB is produced by the int8 quantization; force it with a dummy forward.
+                module(torch.zeros(1, module.in_features, dtype=compute_dtype, device=CB.device))
+                SCB = module.state.SCB
+            fp_weight = bnb.functional.int8_vectorwise_dequant(CB, SCB.to(CB.device)).to(compute_dtype)
+        else:
+            fp_weight = bnb.functional.dequantize_4bit(weight.data, weight.quant_state).to(compute_dtype)
         linear = torch.nn.Linear(module.in_features, module.out_features, bias=module.bias is not None, device="meta")
         linear.weight = torch.nn.Parameter(fp_weight, requires_grad=False)
         if module.bias is not None:
@@ -152,3 +211,15 @@ def _linear4bit_config(quant_type):
 
 register_quant_method("bitsandbytes_nf4", "bitsandbytes", _linear4bit_config("nf4"), label="4bit, nf4, weight-only")
 register_quant_method("bitsandbytes_fp4", "bitsandbytes", _linear4bit_config("fp4"), label="4bit, fp4, weight-only")
+
+
+def _linear8bit_config(backend_config_kwargs):
+    return {
+        "bnb_8bit": True,
+        "threshold": 6.0,
+        **backend_config_kwargs,
+    }
+
+
+register_quant_method("bitsandbytes_int8_w8a8", "bitsandbytes", _linear8bit_config,
+                      label="W8A8, LLM.int8() (Linear8bitLt): int8 weight + int8 activation with fp16 outlier channels")
