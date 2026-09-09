@@ -4,6 +4,14 @@ _LAZY_BACKENDS = {
     "bitsandbytes": ".bitsandbytes",
     "torchao": ".torchao",
     "comfy_kitchen": ".comfy_kitchen",
+    "diffsynth_kernels_tile_ans_fp32": ".diffsynth_kernels",
+    "diffsynth_kernels_tile_ans_fp16": ".diffsynth_kernels",
+    "diffsynth_kernels_dfloat11_bf16": ".diffsynth_kernels",
+    "diffsynth_kernels_tile_ans_bf16": ".diffsynth_kernels",
+    "diffsynth_kernels_tile_ans_fp8_e4m3fn": ".diffsynth_kernels",
+    "diffsynth_kernels_tile_ans_fp8_e4m3fnuz": ".diffsynth_kernels",
+    "diffsynth_kernels_tile_ans_fp8_e5m2": ".diffsynth_kernels",
+    "diffsynth_kernels_tile_ans_fp8_e5m2fnuz": ".diffsynth_kernels",
 }
 _loaded = set()
 

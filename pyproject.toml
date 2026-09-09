@@ -46,6 +46,7 @@ audio = [
 quant = [
     "bitsandbytes",
     "comfy-kitchen",
+    "diffsynth-kernels>=0.2.0",
     "torchao>=0.16"
 ]
 training = [
@@ -84,6 +85,7 @@ all = [
     "librosa",
     "bitsandbytes",
     "comfy-kitchen",
+    "diffsynth-kernels>=0.2.0",
     "torchao>=0.16",
     "deepspeed",
     "tensorboard",
