@@ -19,6 +19,7 @@ Different quantization backends require the corresponding third-party libraries:
 | bitsandbytes | `pip install bitsandbytes` | [bitsandbytes](https://github.com/bitsandbytes-foundation/bitsandbytes) |
 | torchao | `pip install torchao>=0.16` | [torchao](https://github.com/pytorch/ao) |
 | comfy-kitchen | `pip install comfy-kitchen` | [comfy-kitchen](https://github.com/Comfy-Org/comfy-kitchen) |
+| diffsynth-kernels | `pip install diffsynth-kernels>=0.2.0` | [diffsynth-kernels](https://pypi.org/project/diffsynth-kernels/) |
 
 Install all at once: `pip install "diffsynth[quant]"`
 
@@ -69,6 +70,10 @@ The following are all built-in quantization methods. `method` is the name passed
 | `torchao_nvfp4_w4a4` | torchao | NVFP4 / NVFP4 | ✅ | ❌ |
 | `comfy_kitchen_int8_w8a8` | comfy_kitchen | INT8 / INT8 dynamic | ✅ | ✅ |
 | `comfy_kitchen_fp8_w8a8` | comfy_kitchen | FP8 E4M3 / FP8 | ✅ | ✅ |
+| `diffsynth_kernels_bf16_mantissa` | diffsynth-kernels | lossy BF16 mantissa / none | ✅ | ✅ |
+| `diffsynth_kernels_bf16_adaptive` | diffsynth-kernels | configurable lossy adaptive BF16 / none | ✅ | ✅ |
+| `diffsynth_kernels_bf16_adaptive_online` | diffsynth-kernels | fast online adaptive BF16 / none | ✅ | ✅ |
+| `diffsynth_kernels_bf16_adaptive_offline` | diffsynth-kernels | strict offline adaptive BF16 / none | ✅ | ✅ |
 
 Some notes:
 
@@ -76,6 +81,28 @@ Some notes:
 - **LoRA training**: only methods marked ✅ in the "LoRA Training" column can be used for quantization + LoRA training.
 - `comfy_kitchen_*` methods read and write ComfyUI's quantized weight format, interoperable with the ComfyUI ecosystem. comfy-kitchen requires CUDA 13.0 or later.
 - Formats such as MXFP8 / MXFP4 / NVFP4 have compute hardware requirements; see the [torchao](https://github.com/pytorch/ao) documentation for compatibility details.
+- `diffsynth_kernels_bf16_mantissa` keeps 0–6 explicit BF16 mantissa bits (`mantissa_bits=4` by default) and entropy-codes the rounded weights with Tile-ANS.
+- `diffsynth_kernels_bf16_adaptive` targets 1–11 bits per weight (`target_bpp=8.0` by default) with a per-tensor codebook and fixed per-row scales. Its tunable fields are `codebook_size`, `side_dtype`, `sample_rows`, `iterations`, `full_refine_steps`, `fixed_refine_steps`, `use_cached_lambda`, and the index-rANS options. It does not accept `quality` or `group_size`.
+- `diffsynth_kernels_bf16_adaptive_online` accepts the requested `target_bpp=x` and internally uses `x-0.3`, `bpp_tolerance=0.5`, 10+1 rounds, and the lambda cache for online quantization.
+- `diffsynth_kernels_bf16_adaptive_offline` uses `target_bpp=x`, `bpp_tolerance=0`, 50+2 rounds, and no cache for offline quantization before saving weights.
+- In the configurable method, `use_cached_lambda=True` enables the process-local LRU cache; a cached result outside the requested band still triggers bounded correction. Actual bpp is retained in checkpoint options.
+- Both diffsynth-kernels methods reconstruct BF16 weights on demand. Select layers explicitly with `target_modules` / `exclude_modules`; the backend does not apply an implicit size threshold.
+
+For example:
+
+```python
+mantissa = QuantizeConfig(
+    method="diffsynth_kernels_bf16_mantissa",
+    backend_config_kwargs={"mantissa_bits": 4},
+)
+adaptive = QuantizeConfig(
+    method="diffsynth_kernels_bf16_adaptive",
+    target_modules=["to_q", "to_k", "to_v"],
+    backend_config_kwargs={"target_bpp": 8.0, "use_cached_lambda": True},
+)
+```
+
+Both methods support `dynamic`, `dequant_once`, saved/pre-quantized checkpoints, CPU/disk offload, and input-gradient/LoRA flows. Lossy checkpoints use the self-describing CompressedTensor v2 header; headerless legacy buffers remain lossless-only. No model hash is registered until a corresponding artifact is intentionally released.
 
 You can query all available methods and their parameters in code:
 

@@ -19,6 +19,7 @@
 | bitsandbytes | `pip install bitsandbytes` | [bitsandbytes](https://github.com/bitsandbytes-foundation/bitsandbytes) |
 | torchao | `pip install torchao>=0.16` | [torchao](https://github.com/pytorch/ao) |
 | comfy-kitchen | `pip install comfy-kitchen` | [comfy-kitchen](https://github.com/Comfy-Org/comfy-kitchen) |
+| diffsynth-kernels | `pip install diffsynth-kernels>=0.2.0` | [diffsynth-kernels](https://pypi.org/project/diffsynth-kernels/) |
 
 一次性安装全部：`pip install "diffsynth[quant]"`
 
@@ -69,6 +70,10 @@ image.save("image_z_image_nf4.jpg")
 | `torchao_nvfp4_w4a4` | torchao | NVFP4 / NVFP4 | ✅ | ❌ |
 | `comfy_kitchen_int8_w8a8` | comfy_kitchen | INT8 / INT8 动态 | ✅ | ✅ |
 | `comfy_kitchen_fp8_w8a8` | comfy_kitchen | FP8 E4M3 / FP8 | ✅ | ✅ |
+| `diffsynth_kernels_bf16_mantissa` | diffsynth-kernels | 有损 BF16 尾数 / 不量化 | ✅ | ✅ |
+| `diffsynth_kernels_bf16_adaptive` | diffsynth-kernels | 可配置有损自适应 BF16 / 不量化 | ✅ | ✅ |
+| `diffsynth_kernels_bf16_adaptive_online` | diffsynth-kernels | 快速在线自适应 BF16 / 不量化 | ✅ | ✅ |
+| `diffsynth_kernels_bf16_adaptive_offline` | diffsynth-kernels | 严格离线自适应 BF16 / 不量化 | ✅ | ✅ |
 
 几点说明：
 
@@ -76,6 +81,28 @@ image.save("image_z_image_nf4.jpg")
 - **LoRA 训练**：只有表中"支持 LoRA 训练"为 ✅ 的方法可用于量化 + LoRA 训练。
 - `comfy_kitchen_*` 方法读写的是 ComfyUI 的量化权重格式，可与 ComfyUI 生态互通。comfy-kitchen 需要 CUDA 13.0 及以上。
 - MXFP8 / MXFP4 / NVFP4 等格式对计算硬件有要求，具体兼容性请查阅 [torchao](https://github.com/pytorch/ao) 文档。
+- `diffsynth_kernels_bf16_mantissa` 保留 0–6 个 BF16 显式尾数位（默认 `mantissa_bits=4`），并用 Tile-ANS 对舍入后的权重做熵编码。
+- `diffsynth_kernels_bf16_adaptive` 以每个 tensor 1–11 bit/weight 为目标（默认 `target_bpp=8.0`），使用逐 tensor 码本和固定逐行 scale。可调字段包括 `codebook_size`、`side_dtype`、`sample_rows`、`iterations`、`full_refine_steps`、`fixed_refine_steps`、`use_cached_lambda` 以及索引 rANS 选项；不接受 `quality` 或 `group_size`。
+- `diffsynth_kernels_bf16_adaptive_online` 接收用户期望的 `target_bpp=x`，内部使用 `x-0.3`、`bpp_tolerance=0.5`、10+1轮和lambda cache，适合在线量化。
+- `diffsynth_kernels_bf16_adaptive_offline` 使用 `target_bpp=x`、`bpp_tolerance=0`、50+2轮且禁用cache，适合离线量化后保存权重。
+- 可配置方法中的 `use_cached_lambda=True` 启用进程内 LRU cache；若命中结果超出目标区间，仍会执行有界校正。实际 bpp 始终记录在 checkpoint options 中。
+- 两种 diffsynth-kernels 方法都按需重构 BF16 权重。请用 `target_modules` / `exclude_modules` 显式选择层；后端没有隐式尺寸阈值。
+
+示例：
+
+```python
+mantissa = QuantizeConfig(
+    method="diffsynth_kernels_bf16_mantissa",
+    backend_config_kwargs={"mantissa_bits": 4},
+)
+adaptive = QuantizeConfig(
+    method="diffsynth_kernels_bf16_adaptive",
+    target_modules=["to_q", "to_k", "to_v"],
+    backend_config_kwargs={"target_bpp": 8.0, "use_cached_lambda": True},
+)
+```
+
+两种方法都支持 `dynamic`、`dequant_once`、保存/加载预量化 checkpoint、CPU/disk offload 以及输入梯度/LoRA 流程。有损 checkpoint 使用可自描述的 CompressedTensor v2 header；无 header 的旧格式 buffer 仍只允许无损方法加载。在对应权重文件被明确发布前，不注册模型 hash。
 
 你可以在代码中查询所有可用方法及其参数：
 

@@ -466,6 +466,7 @@ output matches: True | repeatable: True
 - 精度收益经过验证：与少 1 bit 的同方案对比，误差确实下降；否则说明反量化路径中丢失了精度。
 - 量化 Linear 是 `torch.nn.Linear` 的子类，`state_dict` 的键都在层名之下。
 - `_apply` 守护了所有打包张量与量化状态的 dtype。
+- 对可自描述的压缩格式，空壳加载时要校验 method、重构 dtype、codec version 和精确 buffer schema。lossless/lossy kind 等属性应由已注册 method 推导，不能保存重复元数据；有损格式不得从无 header 的旧 buffer 中猜测。
 - `capabilities()` 与实际能力一致：声明 `is_serializable` 就要保证 state dict 能往返，声明 `is_differentiable` 就要能通过 `check_differentiable`。
 - `create_quantized_linear` 尊重 `compute_device` / `model_device`，以支持逐层流式量化。
 - 能与 Disk Offload 组合：空壳建在 `meta` 上且重建代价低，所有张量都在层名之下，且 `unflatten_state_dict` 能接受「单层子字典 + 整文件 metadata」的调用方式。

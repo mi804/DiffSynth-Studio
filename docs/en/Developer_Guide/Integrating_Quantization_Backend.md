@@ -466,6 +466,7 @@ On a real model, use the standard workflows from [Model Quantization](../Pipelin
 - The accuracy gain is verified: compared against the same scheme with one bit less, the error really goes down; otherwise precision is being lost somewhere in the dequantization path.
 - The quantized Linear subclasses `torch.nn.Linear`, and all `state_dict` keys live under the layer name.
 - `_apply` guards the dtype of every packed tensor and quant state.
+- For self-describing compression formats, shell loading validates the method, reconstructed dtype, codec version, and exact buffer schema. Derive properties such as lossless/lossy kind from the registered method rather than storing duplicate metadata; never infer a lossy format from legacy headerless buffers.
 - `capabilities()` matches reality: declaring `is_serializable` requires a round-tripping state dict, and declaring `is_differentiable` requires passing `check_differentiable`.
 - `create_quantized_linear` honors `compute_device` / `model_device`, so layer-by-layer streaming quantization works.
 - Disk offload works: the shell is built on `meta` and cheap to rebuild, every stored tensor lives under the layer's dotted name, and `unflatten_state_dict` tolerates being called with a single layer's subdict plus whole-file metadata.
