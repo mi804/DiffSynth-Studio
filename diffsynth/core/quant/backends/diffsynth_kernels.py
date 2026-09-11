@@ -16,6 +16,7 @@ try:
     _REQUIRED_KERNELS_API = (
         CompressionMethod.BF16_MANTISSA,
         CompressionMethod.BF16_ADAPTIVE,
+        CompressionMethod.BF16_E8,
         dk.CompressionKind,
         dk.resolve_compression,
     )
@@ -34,9 +35,20 @@ except (ImportError, AttributeError) as error:
         TILE_ANS = "tile_ans"
         BF16_MANTISSA = "bf16_mantissa"
         BF16_ADAPTIVE = "bf16_adaptive"
+        BF16_E8 = "bf16_e8"
 
         def __str__(self):
             return self.value
+
+
+def _recommended_tile_elements(target_bpp: float) -> int:
+    if target_bpp <= 2.0:
+        return 32768
+    if target_bpp <= 4.0:
+        return 16384
+    if target_bpp <= 7.0:
+        return 8192
+    return 4096
 
 
 @dataclass
@@ -177,7 +189,7 @@ class DiffSynthKernelsBF16AdaptiveConfig(DiffSynthKernelsConfig):
     iterations: int = 10
     full_refine_steps: int = 1
     fixed_refine_steps: int = 1
-    tile_elements: int = 8192
+    tile_elements: int | None = None
     probability_bits: int = 0
     raw_lane_threshold: float = 7.9
     use_cached_lambda: bool = True
@@ -197,7 +209,11 @@ class DiffSynthKernelsBF16AdaptiveConfig(DiffSynthKernelsConfig):
             "iterations": self.iterations,
             "full_refine_steps": self.full_refine_steps,
             "fixed_refine_steps": self.fixed_refine_steps,
-            "tile_elements": self.tile_elements,
+            "tile_elements": (
+                _recommended_tile_elements(float(self.target_bpp))
+                if self.tile_elements is None
+                else self.tile_elements
+            ),
             "probability_bits": self.probability_bits,
             "raw_lane_threshold": self.raw_lane_threshold,
             "use_cached_lambda": self.use_cached_lambda,
@@ -241,6 +257,58 @@ class DiffSynthKernelsBF16AdaptiveOfflineConfig(
     full_refine_steps: int = field(init=False, default=2)
     fixed_refine_steps: int = field(init=False, default=1)
     use_cached_lambda: bool = field(init=False, default=False)
+
+
+@dataclass
+class DiffSynthKernelsBF16E8Config(DiffSynthKernelsConfig):
+    """Lossy E8-lattice VQ at a target bit rate.
+
+    Continuous ``target_bpp`` in [1, 11] (the lattice scale is found by a clean bisection on the
+    real coded byte count -- no lambda search, no cache, no tolerance band). ``prob_bits=None``
+    (default) lets the encoder pick the smallest rANS table that resolves the coordinate alphabet at
+    the chosen scale -- a tiny table at low bpp (fast decode) growing to 13/14 bits at high bpp --
+    so the full 1-11 bpp range is supported; pass an int in {9..14} to pin it. ``tile_elements=None``
+    lets the encoder pick the largest rANS tile that still saturates the GPU; pass an int to pin it.
+    """
+
+    target_bpp: float = 3.0
+    side_dtype: torch.dtype | None = None
+    prob_bits: int | None = None
+    tile_elements: int | None = None
+    row_rdo_iterations: int = 0
+    row_rdo_candidates: int = 5
+    scale_search_iterations: int = 12
+    scale_search_max_vectors: int = 262144
+    dtype: torch.dtype = field(init=False, default=torch.bfloat16)
+    compress_method: CompressionMethod = field(
+        init=False,
+        default=CompressionMethod.BF16_E8,
+    )
+
+    def __post_init__(self):
+        if (
+            isinstance(self.target_bpp, bool)
+            or not isinstance(self.target_bpp, Real)
+            or not math.isfinite(float(self.target_bpp))
+            or not 1.0 <= float(self.target_bpp) <= 11.0
+        ):
+            raise ValueError("target_bpp must be finite and in [1.0, 11.0]")
+        super().__post_init__()
+
+
+    def compression_options(self):
+        options = {
+            "target_bpp": self.target_bpp,
+            "side_dtype": self.side_dtype,
+            "prob_bits": self.prob_bits,
+            "row_rdo_iterations": self.row_rdo_iterations,
+            "row_rdo_candidates": self.row_rdo_candidates,
+            "scale_search_iterations": self.scale_search_iterations,
+            "scale_search_max_vectors": self.scale_search_max_vectors,
+        }
+        if self.tile_elements is not None:
+            options["tile_elements"] = self.tile_elements
+        return options
 
 
 class DiffSynthKernelsLinear(torch.nn.Linear):
@@ -604,6 +672,11 @@ _METHODS = (
         "Strict high-quality offline adaptive BF16 quantization",
     ),
     (
+        "diffsynth_kernels_bf16_e8",
+        DiffSynthKernelsBF16E8Config,
+        "Lossy E8-lattice vector quantization of BF16 weights at a target bit rate",
+    ),
+    (
         "diffsynth_kernels_tile_ans_fp32",
         DiffSynthKernelsTileANSFP32Config,
         "Lossless Tile-ANS compression after conversion to FP32",
@@ -658,6 +731,7 @@ __all__ = [
     "DiffSynthKernelsBF16AdaptiveConfig",
     "DiffSynthKernelsBF16AdaptiveOnlineConfig",
     "DiffSynthKernelsBF16AdaptiveOfflineConfig",
+    "DiffSynthKernelsBF16E8Config",
     "DiffSynthKernelsBF16MantissaConfig",
     "DiffSynthKernelsConfig",
     "DiffSynthKernelsDFloat11BF16Config",

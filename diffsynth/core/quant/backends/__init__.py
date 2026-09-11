@@ -8,6 +8,7 @@ _LAZY_BACKENDS = {
     "diffsynth_kernels_bf16_adaptive": ".diffsynth_kernels",
     "diffsynth_kernels_bf16_adaptive_online": ".diffsynth_kernels",
     "diffsynth_kernels_bf16_adaptive_offline": ".diffsynth_kernels",
+    "diffsynth_kernels_bf16_e8": ".diffsynth_kernels",
     "diffsynth_kernels_tile_ans_fp32": ".diffsynth_kernels",
     "diffsynth_kernels_tile_ans_fp16": ".diffsynth_kernels",
     "diffsynth_kernels_dfloat11_bf16": ".diffsynth_kernels",
