@@ -19,7 +19,7 @@
 | bitsandbytes | `pip install bitsandbytes` | [bitsandbytes](https://github.com/bitsandbytes-foundation/bitsandbytes) |
 | torchao | `pip install torchao>=0.16` | [torchao](https://github.com/pytorch/ao) |
 | comfy-kitchen | `pip install comfy-kitchen` | [comfy-kitchen](https://github.com/Comfy-Org/comfy-kitchen) |
-| diffsynth-kernels | `pip install diffsynth-kernels>=0.2.0` | [diffsynth-kernels](https://pypi.org/project/diffsynth-kernels/) |
+| entropack | `pip install entropack>=0.3.0` | 尚未发布到 PyPI |
 
 一次性安装全部：`pip install "diffsynth[quant]"`
 
@@ -70,7 +70,7 @@ image.save("image_z_image_nf4.jpg")
 | `torchao_nvfp4_w4a4` | torchao | NVFP4 / NVFP4 | ✅ | ❌ |
 | `comfy_kitchen_int8_w8a8` | comfy_kitchen | INT8 / INT8 动态 | ✅ | ✅ |
 | `comfy_kitchen_fp8_w8a8` | comfy_kitchen | FP8 E4M3 / FP8 | ✅ | ✅ |
-| `diffsynth_kernels_bf16_e8` | diffsynth-kernels | 有损 E8 格向量量化 BF16 / 不量化 | ✅ | ✅ |
+| `entropack_bf16_e8` | entropack | 有损 E8 格向量量化 BF16 / 不量化 | ✅ | ✅ |
 
 几点说明：
 
@@ -78,17 +78,17 @@ image.save("image_z_image_nf4.jpg")
 - **LoRA 训练**：只有表中"支持 LoRA 训练"为 ✅ 的方法可用于量化 + LoRA 训练。
 - `comfy_kitchen_*` 方法读写的是 ComfyUI 的量化权重格式，可与 ComfyUI 生态互通。comfy-kitchen 需要 CUDA 13.0 及以上。
 - MXFP8 / MXFP4 / NVFP4 等格式对计算硬件有要求，具体兼容性请查阅 [torchao](https://github.com/pytorch/ao) 文档。
-- `diffsynth_kernels_bf16_e8` 将每行的 8 维权重向量量化到 **E8 格**（8 维最密球堆积，相比标量有 +0.65dB space-filling 增益），并用自写的 **coset 条件化 rANS** 对格点做熵编码（无码本 buffer——格点由坐标代数还原）。目标为连续 `target_bpp`（1–11，默认 3.0）；格尺度通过对真实编码字节做干净二分求得，**无 lambda 搜索、无 cache、无 tolerance 区间**。可调字段：`target_bpp`、`side_dtype`（逐行 scale 的 dtype，默认 FP32）、`prob_bits`（rANS 表精度，默认 `None`=自动：按数据选取最小可行精度并随坐标 alphabet 自动升高）、`tile_elements`（默认 `None`=自动选取仍能打满 GPU 的最大 rANS tile，以获得最快解码）。在 Z-Image-Turbo 上 3bpp 可达约 14% 权重 rel-L2。
-- 该方案在 diffsynth-kernels 中已更名为 **`lattice_rans`** 且不再限于 BF16：量化器全程在 FP32 中工作，容器 dtype 只出现在"读入权重"与"把重建值舍回容器"两处，因此 FP32 / FP16 / FP8 / 整数 / bool 等 tile_ans 支持的全部容器都可用；本后端的配置仍先把权重转成 BF16，行为与之前完全一致。注意整数与 FP8 容器在码率超过其自身无损熵后误差不再下降（例如按行缩放的 int8 约在 9 bpp 处归零），继续加码率没有收益。
+- `entropack_bf16_e8` 将每行的 8 维权重向量量化到 **E8 格**（8 维最密球堆积，相比标量有 +0.65dB space-filling 增益），并用自写的 **coset 条件化 rANS** 对格点做熵编码（无码本 buffer——格点由坐标代数还原）。目标为连续 `target_bpp`（1–11，默认 3.0）；格尺度通过对真实编码字节做干净二分求得，**无 lambda 搜索、无 cache、无 tolerance 区间**。可调字段：`target_bpp`、`side_dtype`（逐行 scale 的 dtype，默认 FP32）、`prob_bits`（rANS 表精度，默认 `None`=自动：按数据选取最小可行精度并随坐标 alphabet 自动升高）、`tile_elements`（默认 `None`=自动选取仍能打满 GPU 的最大 rANS tile，以获得最快解码）。在 Z-Image-Turbo 上 3bpp 可达约 14% 权重 rel-L2。
+- 该方案在 EntroPack 中已更名为 **`lattice_rans`** 且不再限于 BF16：量化器全程在 FP32 中工作，容器 dtype 只出现在"读入权重"与"把重建值舍回容器"两处，因此 FP32 / FP16 / FP8 / 整数 / bool 等 tile_ans 支持的全部容器都可用；本后端的配置仍先把权重转成 BF16，行为与之前完全一致。注意整数与 FP8 容器在码率超过其自身无损熵后误差不再下降（例如按行缩放的 int8 约在 9 bpp 处归零），继续加码率没有收益。
 - **精度要求很高时（例如权重 rel-L2 低于 0.1%）建议直接使用无损 `tile_ans`**：该区间内有损方案的码率已接近无损编码本身（BF16 上约 11 bpp），无损反而更准且不引入任何失真。此条仅为文档口径，代码不会自动切换或截断码率。
 - 实际 bpp 始终记录在 checkpoint options 中。
-- diffsynth-kernels 方法按需重构 BF16 权重。请用 `target_modules` / `exclude_modules` 显式选择层；有损方法按每行 8 维向量编码，要求权重为二维且列数可被 8 整除，不满足的层需显式排除。
+- EntroPack 方法按需重构 BF16 权重。请用 `target_modules` / `exclude_modules` 显式选择层；有损方法按每行 8 维向量编码，要求权重为二维且列数可被 8 整除，不满足的层需显式排除。
 
 示例：
 
 ```python
 e8 = QuantizeConfig(
-    method="diffsynth_kernels_bf16_e8",
+    method="entropack_bf16_e8",
     backend_config_kwargs={"target_bpp": 3.0},   # 连续码率；tile_elements=None 自动调优解码速度
 )
 ```

@@ -4,31 +4,31 @@ import pytest
 import torch
 from safetensors.torch import load_file, save_file
 
-import diffsynth_kernels as dk
+import entropack as ep
 from diffsynth.core.quant import (
     QUANT_METHODS,
     MixedQuantizeConfig,
     QuantizeConfig,
     check_differentiable,
 )
-from diffsynth.core.quant.backends.diffsynth_kernels import (
-    DiffSynthKernelsBF16E8Config,
-    DiffSynthKernelsLinear,
+from diffsynth.core.quant.backends.entropack import (
+    EntroPackBF16E8Config,
+    EntroPackLinear,
 )
 
 
 METHODS = (
-    ("diffsynth_kernels_tile_ans_fp32", torch.float32),
-    ("diffsynth_kernels_tile_ans_fp16", torch.float16),
-    ("diffsynth_kernels_dfloat11_bf16", torch.bfloat16),
-    ("diffsynth_kernels_tile_ans_bf16", torch.bfloat16),
-    ("diffsynth_kernels_tile_ans_fp8_e4m3fn", torch.float8_e4m3fn),
-    ("diffsynth_kernels_tile_ans_fp8_e4m3fnuz", torch.float8_e4m3fnuz),
-    ("diffsynth_kernels_tile_ans_fp8_e5m2", torch.float8_e5m2),
-    ("diffsynth_kernels_tile_ans_fp8_e5m2fnuz", torch.float8_e5m2fnuz),
+    ("entropack_tile_ans_fp32", torch.float32),
+    ("entropack_tile_ans_fp16", torch.float16),
+    ("entropack_dfloat11_bf16", torch.bfloat16),
+    ("entropack_tile_ans_bf16", torch.bfloat16),
+    ("entropack_tile_ans_fp8_e4m3fn", torch.float8_e4m3fn),
+    ("entropack_tile_ans_fp8_e4m3fnuz", torch.float8_e4m3fnuz),
+    ("entropack_tile_ans_fp8_e5m2", torch.float8_e5m2),
+    ("entropack_tile_ans_fp8_e5m2fnuz", torch.float8_e5m2fnuz),
 )
 
-LOSSY_METHOD = "diffsynth_kernels_bf16_e8"
+LOSSY_METHOD = "entropack_bf16_e8"
 LOSSY_KWARGS = {"execution_backend": "eager", "target_bpp": 8.0}
 
 
@@ -48,7 +48,7 @@ def test_registered_method_converts_then_compresses_bitwise(method, dtype):
 
     config.quantize_model(model)
 
-    assert isinstance(model[0], DiffSynthKernelsLinear)
+    assert isinstance(model[0], EntroPackLinear)
     assert model[0].compression_dtype == dtype
     restored = config.backend.dequantize_to_linear(model[0], compute_dtype=dtype)
     assert torch.equal(_bits(restored.weight), _bits(expected))
@@ -57,8 +57,8 @@ def test_registered_method_converts_then_compresses_bitwise(method, dtype):
 @pytest.mark.parametrize(
     "method",
     (
-        "diffsynth_kernels_dfloat11_bf16",
-        "diffsynth_kernels_tile_ans_bf16",
+        "entropack_dfloat11_bf16",
+        "entropack_tile_ans_bf16",
     ),
 )
 def test_state_dict_roundtrip(method):
@@ -86,8 +86,8 @@ def test_state_dict_roundtrip(method):
 @pytest.mark.parametrize(
     "method",
     (
-        "diffsynth_kernels_dfloat11_bf16",
-        "diffsynth_kernels_tile_ans_bf16",
+        "entropack_dfloat11_bf16",
+        "entropack_tile_ans_bf16",
     ),
 )
 def test_safetensors_roundtrip(tmp_path, method):
@@ -118,8 +118,8 @@ def test_safetensors_roundtrip(tmp_path, method):
 @pytest.mark.parametrize(
     "method",
     (
-        "diffsynth_kernels_dfloat11_bf16",
-        "diffsynth_kernels_tile_ans_bf16",
+        "entropack_dfloat11_bf16",
+        "entropack_tile_ans_bf16",
     ),
 )
 def test_legacy_buffer_keys_load(method):
@@ -147,12 +147,12 @@ def test_mixed_bf16_methods_roundtrip():
     config = MixedQuantizeConfig(
         configs=[
             QuantizeConfig(
-                method="diffsynth_kernels_dfloat11_bf16",
+                method="entropack_dfloat11_bf16",
                 target_modules=["0"],
                 backend_config_kwargs={"execution_backend": "eager"},
             ),
             QuantizeConfig(
-                method="diffsynth_kernels_tile_ans_bf16",
+                method="entropack_tile_ans_bf16",
                 target_modules=["1"],
                 backend_config_kwargs={"execution_backend": "eager"},
             ),
@@ -181,7 +181,7 @@ def test_mixed_bf16_methods_roundtrip():
 def test_dtype_conversion_does_not_retype_compressed_buffers():
     model = torch.nn.Sequential(torch.nn.Linear(33, 17, dtype=torch.float32))
     config = QuantizeConfig(
-        method="diffsynth_kernels_tile_ans_bf16",
+        method="entropack_tile_ans_bf16",
         backend_config_kwargs={"execution_backend": "eager"},
     )
     config.quantize_model(model)
@@ -201,7 +201,7 @@ def test_dtype_conversion_does_not_retype_compressed_buffers():
 def test_deepcopy_preserves_compressed_weight():
     model = torch.nn.Sequential(torch.nn.Linear(33, 17, dtype=torch.float32))
     config = QuantizeConfig(
-        method="diffsynth_kernels_dfloat11_bf16",
+        method="entropack_dfloat11_bf16",
         backend_config_kwargs={"execution_backend": "eager"},
     )
     config.quantize_model(model)
@@ -218,7 +218,7 @@ def test_deepcopy_preserves_compressed_weight():
 @pytest.mark.parametrize(
     "method",
     (
-        "diffsynth_kernels_tile_ans_fp16",
+        "entropack_tile_ans_fp16",
         LOSSY_METHOD,
     ),
 )
@@ -248,10 +248,10 @@ def _lossy_model():
 
 
 def test_lossy_method_is_registered_with_final_defaults():
-    assert QUANT_METHODS[LOSSY_METHOD].backend == "diffsynth_kernels"
+    assert QUANT_METHODS[LOSSY_METHOD].backend == "entropack"
 
-    config = DiffSynthKernelsBF16E8Config()
-    assert config.compress_method is dk.CompressionMethod.BF16_E8
+    config = EntroPackBF16E8Config()
+    assert config.compress_method is ep.CompressionMethod.BF16_E8
     assert config.dtype is torch.bfloat16
     assert config.target_bpp == 3.0
     assert config.side_dtype is None
@@ -283,13 +283,13 @@ def test_lossy_method_is_registered_with_final_defaults():
 )
 def test_lossy_config_rejects_invalid_values(kwargs, message):
     with pytest.raises((TypeError, ValueError), match=message):
-        DiffSynthKernelsBF16E8Config.from_kwargs(kwargs)
+        EntroPackBF16E8Config.from_kwargs(kwargs)
 
 
 @pytest.mark.parametrize("field_name", ("quality", "group_size", "dtype", "compress_method"))
 def test_lossy_config_rejects_removed_unknown_and_pinned_fields(field_name):
     with pytest.raises(ValueError, match="not accepted"):
-        DiffSynthKernelsBF16E8Config.from_kwargs({field_name: "invalid"})
+        EntroPackBF16E8Config.from_kwargs({field_name: "invalid"})
 
 
 def test_lossy_reconstruction_uses_shared_linear():
@@ -300,12 +300,12 @@ def test_lossy_reconstruction_uses_shared_linear():
 
     config.quantize_model(model)
 
-    assert type(model[0]) is DiffSynthKernelsLinear
+    assert type(model[0]) is EntroPackLinear
     compressed = model[0]._compressed()
-    assert compressed.header["version"] == dk.ENVELOPE_VERSION == 2
-    assert compressed.compression_kind is dk.CompressionKind.LOSSY
-    assert model[0].compression_kind is dk.CompressionKind.LOSSY
-    restored = dk.decompress(compressed, execution_backend="eager")
+    assert compressed.header["version"] == ep.ENVELOPE_VERSION == 2
+    assert compressed.compression_kind is ep.CompressionKind.LOSSY
+    assert model[0].compression_kind is ep.CompressionKind.LOSSY
+    restored = ep.decompress(compressed, execution_backend="eager")
     assert restored.dtype is torch.bfloat16
     assert restored.shape == original.shape
     assert not torch.equal(_bits(restored), _bits(original))
@@ -319,7 +319,7 @@ def test_lossy_v2_state_dict_and_safetensors_roundtrip(tmp_path):
     config = _lossy_config()
     config.quantize_model(source)
     state = source.state_dict()
-    assert state["0._diffsynth_kernels.header"].dtype is torch.uint8
+    assert state["0._entropack.header"].dtype is torch.uint8
 
     restored = _lossy_model()
     config.prepare_for_prequantized_load(restored, compute_dtype=torch.float32)
@@ -328,7 +328,7 @@ def test_lossy_v2_state_dict_and_safetensors_roundtrip(tmp_path):
     expected = source[0]._compressed()
     actual = restored[0]._compressed()
     assert actual.header == expected.header
-    assert actual.compression_kind is dk.CompressionKind.LOSSY
+    assert actual.compression_kind is ep.CompressionKind.LOSSY
     for name in expected.buffers:
         assert torch.equal(actual.buffers[name], expected.buffers[name])
 
@@ -350,23 +350,23 @@ def test_lossy_v2_state_dict_and_safetensors_roundtrip(tmp_path):
 
 def test_set_compressed_rejects_wrong_method_dtype_codec_and_buffer_schema():
     weight = torch.randn(8, 16, dtype=torch.bfloat16)
-    lossy = dk.compress(
+    lossy = ep.compress(
         weight,
-        compress_method=dk.CompressionMethod.BF16_E8,
+        compress_method=ep.CompressionMethod.BF16_E8,
         execution_backend="eager",
     )
-    dfloat = dk.compress(
+    dfloat = ep.compress(
         weight,
-        compress_method=dk.CompressionMethod.DFLOAT11,
+        compress_method=ep.CompressionMethod.DFLOAT11,
         execution_backend="eager",
     )
-    shell = DiffSynthKernelsLinear(
+    shell = EntroPackLinear(
         16,
         8,
         bias=False,
         compute_dtype=torch.float32,
         compression_dtype=torch.bfloat16,
-        compress_method=dk.CompressionMethod.BF16_E8,
+        compress_method=ep.CompressionMethod.BF16_E8,
         execution_backend="eager",
     )
 
@@ -399,7 +399,7 @@ def test_lossy_requires_v2_header_and_rejects_headerless_buffers():
     v1.header.update(
         version=1,
         format_id="bf16",
-        method_id=dk.CompressionMethod.BF16_E8,
+        method_id=ep.CompressionMethod.BF16_E8,
     )
     with pytest.raises(ValueError, match="standard v2 header"):
         model[0]._set_compressed(v1)
@@ -418,7 +418,7 @@ def test_mixed_lossless_and_lossy_methods_roundtrip():
     config = MixedQuantizeConfig(
         configs=[
             QuantizeConfig(
-                method="diffsynth_kernels_dfloat11_bf16",
+                method="entropack_dfloat11_bf16",
                 target_modules=["lossless"],
                 backend_config_kwargs={"execution_backend": "eager"},
             ),
@@ -447,8 +447,8 @@ def test_mixed_lossless_and_lossy_methods_roundtrip():
     config.prepare_for_prequantized_load(restored, compute_dtype=torch.float32)
     restored.load_state_dict(config.unflatten_state_dict(state, metadata), assign=True)
 
-    assert restored["lossless"].compression_kind is dk.CompressionKind.LOSSLESS
-    assert restored["lossy"].compression_kind is dk.CompressionKind.LOSSY
+    assert restored["lossless"].compression_kind is ep.CompressionKind.LOSSLESS
+    assert restored["lossy"].compression_kind is ep.CompressionKind.LOSSY
     lossless_input = torch.randn(2, 64)
     assert torch.equal(
         restored["lossless"](lossless_input), source["lossless"](lossless_input)
@@ -482,7 +482,7 @@ def test_lossy_dequant_once_restores_plain_linear():
     model = _lossy_model()
     config = _lossy_config(mode="dequant_once")
     config.quantize_model(model)
-    expected = dk.decompress(model[0]._compressed(), execution_backend="eager")
+    expected = ep.decompress(model[0]._compressed(), execution_backend="eager")
 
     config.dequantize_model(model, compute_dtype=torch.bfloat16)
 

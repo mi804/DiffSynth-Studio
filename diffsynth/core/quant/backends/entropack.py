@@ -10,20 +10,20 @@ from ..base import BackendConfig, QuantBackend, register_quant_backend
 from ..config import register_quant_method
 
 try:
-    import diffsynth_kernels as dk
+    import entropack as ep
 
-    CompressionMethod = dk.CompressionMethod
-    _REQUIRED_KERNELS_API = (
+    CompressionMethod = ep.CompressionMethod
+    _REQUIRED_ENTROPACK_API = (
         CompressionMethod.BF16_E8,
-        dk.CompressionKind,
-        dk.resolve_compression,
+        ep.CompressionKind,
+        ep.resolve_compression,
     )
-    DIFFSYNTH_KERNELS_AVAILABLE = True
-    _DIFFSYNTH_KERNELS_IMPORT_ERROR = None
+    ENTROPACK_AVAILABLE = True
+    _ENTROPACK_IMPORT_ERROR = None
 except (ImportError, AttributeError) as error:
-    dk = None
-    DIFFSYNTH_KERNELS_AVAILABLE = False
-    _DIFFSYNTH_KERNELS_IMPORT_ERROR = error
+    ep = None
+    ENTROPACK_AVAILABLE = False
+    _ENTROPACK_IMPORT_ERROR = error
 
     class CompressionMethod(str, Enum):
         """Keep this optional backend importable until its dependency is installed."""
@@ -39,7 +39,7 @@ except (ImportError, AttributeError) as error:
 
 
 @dataclass
-class DiffSynthKernelsConfig(BackendConfig):
+class EntroPackConfig(BackendConfig):
     execution_backend: str = "auto"
 
     def __post_init__(self):
@@ -49,8 +49,8 @@ class DiffSynthKernelsConfig(BackendConfig):
             )
         dtype = getattr(self, "dtype", None)
         compress_method = getattr(self, "compress_method", None)
-        if DIFFSYNTH_KERNELS_AVAILABLE and dtype is not None and compress_method is not None:
-            dk.resolve_compression(
+        if ENTROPACK_AVAILABLE and dtype is not None and compress_method is not None:
+            ep.resolve_compression(
                 dtype,
                 compress_method=compress_method,
                 **self.compression_options(),
@@ -61,7 +61,7 @@ class DiffSynthKernelsConfig(BackendConfig):
 
 
 @dataclass
-class DiffSynthKernelsTileANSConfig(DiffSynthKernelsConfig):
+class EntroPackTileANSConfig(EntroPackConfig):
     tile_elements: int = 8192
     probability_bits: int = 0
     raw_lane_threshold: float = 7.9
@@ -80,56 +80,56 @@ class DiffSynthKernelsTileANSConfig(DiffSynthKernelsConfig):
 
 
 @dataclass
-class DiffSynthKernelsTileANSFP32Config(DiffSynthKernelsTileANSConfig):
+class EntroPackTileANSFP32Config(EntroPackTileANSConfig):
     tile_elements: int = 8192
     probability_bits: int = 10
     dtype: torch.dtype = field(init=False, default=torch.float32)
 
 
 @dataclass
-class DiffSynthKernelsTileANSFP16Config(DiffSynthKernelsTileANSConfig):
+class EntroPackTileANSFP16Config(EntroPackTileANSConfig):
     tile_elements: int = 8192
     probability_bits: int = 11
     dtype: torch.dtype = field(init=False, default=torch.float16)
 
 
 @dataclass
-class DiffSynthKernelsTileANSBF16Config(DiffSynthKernelsTileANSConfig):
+class EntroPackTileANSBF16Config(EntroPackTileANSConfig):
     tile_elements: int = 0
     probability_bits: int = 11
     dtype: torch.dtype = field(init=False, default=torch.bfloat16)
 
 
 @dataclass
-class DiffSynthKernelsTileANSFP8E4M3FNConfig(DiffSynthKernelsTileANSConfig):
+class EntroPackTileANSFP8E4M3FNConfig(EntroPackTileANSConfig):
     tile_elements: int = 8192
     probability_bits: int = 0
     dtype: torch.dtype = field(init=False, default=torch.float8_e4m3fn)
 
 
 @dataclass
-class DiffSynthKernelsTileANSFP8E4M3FNUZConfig(DiffSynthKernelsTileANSConfig):
+class EntroPackTileANSFP8E4M3FNUZConfig(EntroPackTileANSConfig):
     tile_elements: int = 8192
     probability_bits: int = 0
     dtype: torch.dtype = field(init=False, default=torch.float8_e4m3fnuz)
 
 
 @dataclass
-class DiffSynthKernelsTileANSFP8E5M2Config(DiffSynthKernelsTileANSConfig):
+class EntroPackTileANSFP8E5M2Config(EntroPackTileANSConfig):
     tile_elements: int = 8192
     probability_bits: int = 0
     dtype: torch.dtype = field(init=False, default=torch.float8_e5m2)
 
 
 @dataclass
-class DiffSynthKernelsTileANSFP8E5M2FNUZConfig(DiffSynthKernelsTileANSConfig):
+class EntroPackTileANSFP8E5M2FNUZConfig(EntroPackTileANSConfig):
     tile_elements: int = 8192
     probability_bits: int = 0
     dtype: torch.dtype = field(init=False, default=torch.float8_e5m2fnuz)
 
 
 @dataclass
-class DiffSynthKernelsDFloat11BF16Config(DiffSynthKernelsConfig):
+class EntroPackDFloat11BF16Config(EntroPackConfig):
     bytes_per_thread: int = 16
     threads_per_block: int = 128
     dtype: torch.dtype = field(init=False, default=torch.bfloat16)
@@ -146,7 +146,7 @@ class DiffSynthKernelsDFloat11BF16Config(DiffSynthKernelsConfig):
 
 
 @dataclass
-class DiffSynthKernelsBF16E8Config(DiffSynthKernelsConfig):
+class EntroPackBF16E8Config(EntroPackConfig):
     """Lossy E8-lattice VQ at a target bit rate.
 
     Continuous ``target_bpp`` in [1, 11] (the lattice scale is found by a clean bisection on the
@@ -197,8 +197,8 @@ class DiffSynthKernelsBF16E8Config(DiffSynthKernelsConfig):
         return options
 
 
-class DiffSynthKernelsLinear(torch.nn.Linear):
-    _STATE_PREFIX = "_diffsynth_kernels."
+class EntroPackLinear(torch.nn.Linear):
+    _STATE_PREFIX = "_entropack."
 
     def __init__(
         self,
@@ -223,7 +223,7 @@ class DiffSynthKernelsLinear(torch.nn.Linear):
         self.execution_backend = execution_backend
         self.weight = None
         self._compressed_weight = None
-        resolved = dk.resolve_compression(
+        resolved = ep.resolve_compression(
             compression_dtype,
             compress_method=compress_method,
         )
@@ -246,13 +246,13 @@ class DiffSynthKernelsLinear(torch.nn.Linear):
 
     def _compressed(self):
         if self._compressed_weight is None:
-            raise RuntimeError("DiffSynthKernelsLinear has no compressed weight loaded")
+            raise RuntimeError("EntroPackLinear has no compressed weight loaded")
         return self._compressed_weight
 
     def _set_compressed(self, compressed):
-        if not isinstance(compressed, dk.CompressedTensor):
+        if not isinstance(compressed, ep.CompressedTensor):
             raise TypeError(
-                "compressed weight must be a diffsynth_kernels.CompressedTensor"
+                "compressed weight must be an entropack.CompressedTensor"
             )
         if compressed.shape != (self.out_features, self.in_features):
             raise ValueError(
@@ -280,8 +280,8 @@ class DiffSynthKernelsLinear(torch.nn.Linear):
                 f"configured version {self._compression_codec_version}"
             )
         if (
-            compressed.compression_kind == dk.CompressionKind.LOSSY
-            and compressed.header.get("version") != dk.ENVELOPE_VERSION
+            compressed.compression_kind == ep.CompressionKind.LOSSY
+            and compressed.header.get("version") != ep.ENVELOPE_VERSION
         ):
             raise ValueError("Lossy compressed weights require a standard v2 header")
         if set(compressed.buffers) != set(self._compression_buffer_names):
@@ -289,7 +289,7 @@ class DiffSynthKernelsLinear(torch.nn.Linear):
                 f"Compressed buffers {sorted(compressed.buffers)} do not match expected "
                 f"{list(self._compression_buffer_names)}"
             )
-        validated = dk.CompressedTensor(
+        validated = ep.CompressedTensor(
             header=compressed.header,
             buffers={name: compressed.buffers[name] for name in self._compression_buffer_names},
             shape=compressed.shape,
@@ -300,7 +300,7 @@ class DiffSynthKernelsLinear(torch.nn.Linear):
         self._compressed_weight = validated
 
     def forward(self, x):
-        weight = dk.decompress(
+        weight = ep.decompress(
             self._compressed(),
             execution_backend=self.execution_backend,
         ).to(x.dtype)
@@ -327,7 +327,7 @@ class DiffSynthKernelsLinear(torch.nn.Linear):
         compressed_prefix = prefix + self._STATE_PREFIX
         header_key = compressed_prefix + "header"
         if header_key in state_dict:
-            compressed = dk.CompressedTensor.from_state_dict(
+            compressed = ep.CompressedTensor.from_state_dict(
                 state_dict,
                 prefix=compressed_prefix,
             )
@@ -342,10 +342,10 @@ class DiffSynthKernelsLinear(torch.nn.Linear):
                 if prefix + name in state_dict
             }
             if legacy:
-                if self.compression_kind != dk.CompressionKind.LOSSLESS:
+                if self.compression_kind != ep.CompressionKind.LOSSLESS:
                     error_msgs.append(
                         f"Legacy headerless compressed buffers for '{prefix[:-1]}' are only "
-                        "supported by lossless diffsynth-kernels methods; lossy weights "
+                        "supported by lossless entropack methods; lossy weights "
                         "require a standard v2 header"
                     )
                 elif set(legacy) != set(self._compression_buffer_names):
@@ -354,9 +354,9 @@ class DiffSynthKernelsLinear(torch.nn.Linear):
                     )
                 else:
                     self._set_compressed(
-                        dk.CompressedTensor(
+                        ep.CompressedTensor(
                             header={
-                                "version": dk.ENVELOPE_VERSION,
+                                "version": ep.ENVELOPE_VERSION,
                                 "compress_method": self.compress_method,
                                 "codec_version": self._compression_codec_version,
                                 "resolved_options": {},
@@ -395,7 +395,7 @@ class DiffSynthKernelsLinear(torch.nn.Linear):
                     transformed = buffer.to(device=transformed.device)
                 self._buffers[name] = transformed
         if self._compressed_weight is not None:
-            self._compressed_weight = dk.CompressedTensor(
+            self._compressed_weight = ep.CompressedTensor(
                 header=self._compressed_weight.header,
                 buffers={name: self._buffers[name] for name in self._compression_buffer_names},
                 shape=self._compressed_weight.shape,
@@ -415,7 +415,7 @@ class DiffSynthKernelsLinear(torch.nn.Linear):
         )
         if self._compressed_weight is not None:
             clone._set_compressed(
-                dk.CompressedTensor(
+                ep.CompressedTensor(
                     header=self._compressed_weight.header,
                     buffers={
                         name: self._buffers[name].detach().clone()
@@ -434,15 +434,15 @@ class DiffSynthKernelsLinear(torch.nn.Linear):
         return clone
 
 
-@register_quant_backend("diffsynth_kernels")
-class DiffSynthKernelsQuantBackend(QuantBackend):
+@register_quant_backend("entropack")
+class EntroPackQuantBackend(QuantBackend):
     def validate_environment(self):
-        if not DIFFSYNTH_KERNELS_AVAILABLE:
+        if not ENTROPACK_AVAILABLE:
             raise ImportError(
-                "diffsynth-kernels>=0.2.0 with the unified compression API is required "
+                "entropack>=0.3.0 with the unified compression API is required "
                 "for this quantization method. Install the package and the CuPy extra "
                 "matching the CUDA major version."
-            ) from _DIFFSYNTH_KERNELS_IMPORT_ERROR
+            ) from _ENTROPACK_IMPORT_ERROR
 
     def capabilities(self):
         return {
@@ -453,12 +453,12 @@ class DiffSynthKernelsQuantBackend(QuantBackend):
         }
 
     def quantized_linear_classes(self):
-        return (DiffSynthKernelsLinear,)
+        return (EntroPackLinear,)
 
     def flatten_state_dict(self, state_dict):
         return state_dict, {
             "diffsynth.quantization.schema": "1",
-            "diffsynth.quantization.backends": json.dumps(["diffsynth_kernels"]),
+            "diffsynth.quantization.backends": json.dumps(["entropack"]),
         }
 
     def unflatten_state_dict(self, state_dict, metadata):
@@ -468,19 +468,19 @@ class DiffSynthKernelsQuantBackend(QuantBackend):
         linear.requires_grad_(False)
         if compute_device is not None:
             linear = linear.to(device=compute_device)
-        resolved = dk.resolve_compression(
+        resolved = ep.resolve_compression(
             self.config.dtype,
             compress_method=self.config.compress_method,
             **self.config.compression_options(),
         )
-        compressed = dk.compress(
+        compressed = ep.compress(
             linear.weight.data,
             format=resolved.dtype,
             compress_method=resolved.compress_method,
             execution_backend=self.config.execution_backend,
             **resolved.options,
         )
-        quant_linear = DiffSynthKernelsLinear(
+        quant_linear = EntroPackLinear(
             linear.in_features,
             linear.out_features,
             bias=linear.bias is not None,
@@ -498,7 +498,7 @@ class DiffSynthKernelsQuantBackend(QuantBackend):
         return quant_linear if model_device is None else quant_linear.to(device=model_device)
 
     def create_quantized_linear_shell(self, linear, compute_dtype):
-        return DiffSynthKernelsLinear(
+        return EntroPackLinear(
             linear.in_features,
             linear.out_features,
             bias=linear.bias is not None,
@@ -517,7 +517,7 @@ class DiffSynthKernelsQuantBackend(QuantBackend):
     ):
         if compute_device is not None:
             module = module.to(device=compute_device)
-        weight = dk.decompress(
+        weight = ep.decompress(
             module._compressed(),
             execution_backend=self.config.execution_backend,
         ).to(compute_dtype)
@@ -538,48 +538,48 @@ class DiffSynthKernelsQuantBackend(QuantBackend):
 
 _METHODS = (
     (
-        "diffsynth_kernels_bf16_e8",
-        DiffSynthKernelsBF16E8Config,
+        "entropack_bf16_e8",
+        EntroPackBF16E8Config,
         "Lossy E8-lattice vector quantization of BF16 weights at a target bit rate",
     ),
     (
-        "diffsynth_kernels_tile_ans_fp32",
-        DiffSynthKernelsTileANSFP32Config,
+        "entropack_tile_ans_fp32",
+        EntroPackTileANSFP32Config,
         "Lossless Tile-ANS compression after conversion to FP32",
     ),
     (
-        "diffsynth_kernels_tile_ans_fp16",
-        DiffSynthKernelsTileANSFP16Config,
+        "entropack_tile_ans_fp16",
+        EntroPackTileANSFP16Config,
         "Lossless Tile-ANS compression after conversion to FP16",
     ),
     (
-        "diffsynth_kernels_dfloat11_bf16",
-        DiffSynthKernelsDFloat11BF16Config,
+        "entropack_dfloat11_bf16",
+        EntroPackDFloat11BF16Config,
         "Lossless DFloat11 compression after conversion to BF16",
     ),
     (
-        "diffsynth_kernels_tile_ans_bf16",
-        DiffSynthKernelsTileANSBF16Config,
+        "entropack_tile_ans_bf16",
+        EntroPackTileANSBF16Config,
         "Lossless Tile-ANS compression after conversion to BF16",
     ),
     (
-        "diffsynth_kernels_tile_ans_fp8_e4m3fn",
-        DiffSynthKernelsTileANSFP8E4M3FNConfig,
+        "entropack_tile_ans_fp8_e4m3fn",
+        EntroPackTileANSFP8E4M3FNConfig,
         "Lossless Tile-ANS compression after conversion to FP8 E4M3FN",
     ),
     (
-        "diffsynth_kernels_tile_ans_fp8_e4m3fnuz",
-        DiffSynthKernelsTileANSFP8E4M3FNUZConfig,
+        "entropack_tile_ans_fp8_e4m3fnuz",
+        EntroPackTileANSFP8E4M3FNUZConfig,
         "Lossless Tile-ANS compression after conversion to FP8 E4M3FNUZ",
     ),
     (
-        "diffsynth_kernels_tile_ans_fp8_e5m2",
-        DiffSynthKernelsTileANSFP8E5M2Config,
+        "entropack_tile_ans_fp8_e5m2",
+        EntroPackTileANSFP8E5M2Config,
         "Lossless Tile-ANS compression after conversion to FP8 E5M2",
     ),
     (
-        "diffsynth_kernels_tile_ans_fp8_e5m2fnuz",
-        DiffSynthKernelsTileANSFP8E5M2FNUZConfig,
+        "entropack_tile_ans_fp8_e5m2fnuz",
+        EntroPackTileANSFP8E5M2FNUZConfig,
         "Lossless Tile-ANS compression after conversion to FP8 E5M2FNUZ",
     ),
 )
@@ -587,24 +587,24 @@ _METHODS = (
 for method_name, config_class, label in _METHODS:
     register_quant_method(
         method_name,
-        "diffsynth_kernels",
+        "entropack",
         config_class.from_kwargs,
         label=label,
     )
 
 
 __all__ = [
-    "DiffSynthKernelsBF16E8Config",
-    "DiffSynthKernelsConfig",
-    "DiffSynthKernelsDFloat11BF16Config",
-    "DiffSynthKernelsLinear",
-    "DiffSynthKernelsQuantBackend",
-    "DiffSynthKernelsTileANSBF16Config",
-    "DiffSynthKernelsTileANSConfig",
-    "DiffSynthKernelsTileANSFP16Config",
-    "DiffSynthKernelsTileANSFP32Config",
-    "DiffSynthKernelsTileANSFP8E4M3FNConfig",
-    "DiffSynthKernelsTileANSFP8E4M3FNUZConfig",
-    "DiffSynthKernelsTileANSFP8E5M2Config",
-    "DiffSynthKernelsTileANSFP8E5M2FNUZConfig",
+    "EntroPackBF16E8Config",
+    "EntroPackConfig",
+    "EntroPackDFloat11BF16Config",
+    "EntroPackLinear",
+    "EntroPackQuantBackend",
+    "EntroPackTileANSBF16Config",
+    "EntroPackTileANSConfig",
+    "EntroPackTileANSFP16Config",
+    "EntroPackTileANSFP32Config",
+    "EntroPackTileANSFP8E4M3FNConfig",
+    "EntroPackTileANSFP8E4M3FNUZConfig",
+    "EntroPackTileANSFP8E5M2Config",
+    "EntroPackTileANSFP8E5M2FNUZConfig",
 ]
