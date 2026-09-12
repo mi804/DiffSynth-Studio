@@ -74,6 +74,7 @@ image.save("image_z_image_nf4.jpg")
 | `diffsynth_kernels_bf16_adaptive` | diffsynth-kernels | 可配置有损自适应 BF16 / 不量化 | ✅ | ✅ |
 | `diffsynth_kernels_bf16_adaptive_online` | diffsynth-kernels | 快速在线自适应 BF16 / 不量化 | ✅ | ✅ |
 | `diffsynth_kernels_bf16_adaptive_offline` | diffsynth-kernels | 严格离线自适应 BF16 / 不量化 | ✅ | ✅ |
+| `diffsynth_kernels_bf16_e8` | diffsynth-kernels | 有损 E8 格向量量化 BF16 / 不量化 | ✅ | ✅ |
 
 几点说明：
 
@@ -85,6 +86,7 @@ image.save("image_z_image_nf4.jpg")
 - `diffsynth_kernels_bf16_adaptive` 以每个 tensor 1–11 bit/weight 为目标（默认 `target_bpp=8.0`），使用逐 tensor 码本和固定逐行 scale。可调字段包括 `codebook_size`、`side_dtype`、`sample_rows`、`iterations`、`full_refine_steps`、`fixed_refine_steps`、`use_cached_lambda` 以及索引 rANS 选项；不接受 `quality` 或 `group_size`。
 - `diffsynth_kernels_bf16_adaptive_online` 接收用户期望的 `target_bpp=x`，内部使用 `x-0.3`、`bpp_tolerance=0.5`、10+1轮和lambda cache，适合在线量化。
 - `diffsynth_kernels_bf16_adaptive_offline` 使用 `target_bpp=x`、`bpp_tolerance=0`、50+2轮且禁用cache，适合离线量化后保存权重。
+- `diffsynth_kernels_bf16_e8` 将每行的 8 维权重向量量化到 **E8 格**（8 维最密球堆积，相比标量有 +0.65dB space-filling 增益），并用自写的 **coset 条件化 rANS** 对格点做熵编码（无码本 buffer——格点由坐标代数还原）。目标为连续 `target_bpp`（1–11，默认 3.0）；格尺度通过对真实编码字节做干净二分求得，**无 lambda 搜索、无 cache、无 tolerance 区间**。可调字段：`target_bpp`、`side_dtype`（逐行 scale 的 dtype，默认 FP32）、`prob_bits`（rANS 表精度，默认 `None`=自动：按数据选取最小可行精度并随坐标 alphabet 自动升高）、`tile_elements`（默认 `None`=自动选取仍能打满 GPU 的最大 rANS tile，以获得最快解码）。在 Z-Image-Turbo 上 3bpp 可达约 14% 权重 rel-L2，优于同码率的 `bf16_adaptive`（约 15.9%）。
 - 可配置方法中的 `use_cached_lambda=True` 启用进程内 LRU cache；若命中结果超出目标区间，仍会执行有界校正。实际 bpp 始终记录在 checkpoint options 中。
 - 两种 diffsynth-kernels 方法都按需重构 BF16 权重。请用 `target_modules` / `exclude_modules` 显式选择层；后端没有隐式尺寸阈值。
 
@@ -99,6 +101,10 @@ adaptive = QuantizeConfig(
     method="diffsynth_kernels_bf16_adaptive",
     target_modules=["to_q", "to_k", "to_v"],
     backend_config_kwargs={"target_bpp": 8.0, "use_cached_lambda": True},
+)
+e8 = QuantizeConfig(
+    method="diffsynth_kernels_bf16_e8",
+    backend_config_kwargs={"target_bpp": 3.0},   # 连续码率；tile_elements=None 自动调优解码速度
 )
 ```
 

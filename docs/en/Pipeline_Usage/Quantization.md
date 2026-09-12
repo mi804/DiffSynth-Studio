@@ -74,6 +74,7 @@ The following are all built-in quantization methods. `method` is the name passed
 | `diffsynth_kernels_bf16_adaptive` | diffsynth-kernels | configurable lossy adaptive BF16 / none | ✅ | ✅ |
 | `diffsynth_kernels_bf16_adaptive_online` | diffsynth-kernels | fast online adaptive BF16 / none | ✅ | ✅ |
 | `diffsynth_kernels_bf16_adaptive_offline` | diffsynth-kernels | strict offline adaptive BF16 / none | ✅ | ✅ |
+| `diffsynth_kernels_bf16_e8` | diffsynth-kernels | lossy E8-lattice VQ BF16 / none | ✅ | ✅ |
 
 Some notes:
 
@@ -85,6 +86,7 @@ Some notes:
 - `diffsynth_kernels_bf16_adaptive` targets 1–11 bits per weight (`target_bpp=8.0` by default) with a per-tensor codebook and fixed per-row scales. Its tunable fields are `codebook_size`, `side_dtype`, `sample_rows`, `iterations`, `full_refine_steps`, `fixed_refine_steps`, `use_cached_lambda`, and the index-rANS options. It does not accept `quality` or `group_size`.
 - `diffsynth_kernels_bf16_adaptive_online` accepts the requested `target_bpp=x` and internally uses `x-0.3`, `bpp_tolerance=0.5`, 10+1 rounds, and the lambda cache for online quantization.
 - `diffsynth_kernels_bf16_adaptive_offline` uses `target_bpp=x`, `bpp_tolerance=0`, 50+2 rounds, and no cache for offline quantization before saving weights.
+- `diffsynth_kernels_bf16_e8` quantizes each row's 8-dim weight vectors to the **E8 lattice** (the densest 8-D sphere packing, +0.65 dB space-filling gain over scalar) and entropy-codes the lattice point with a custom **coset-conditioned rANS** (no codebook buffer — the point is recovered algebraically). It targets a continuous `target_bpp` (1–11, default 3.0); the lattice scale is found by a clean bisection on the real coded byte count, so there is **no lambda search, no cache, and no tolerance band**. Tunable fields: `target_bpp`, `side_dtype` (per-row scale dtype, default FP32), `prob_bits` (rANS table precision, default `None` = auto: the smallest viable precision for the data, grown automatically as the coordinate alphabet requires), `tile_elements` (default `None` = auto-pick the largest rANS tile that still saturates the GPU for the fastest decode). At 3 bpp on Z-Image-Turbo it reaches ~14% weight rel-L2, beating `bf16_adaptive` (~15.9% at the same rate).
 - In the configurable method, `use_cached_lambda=True` enables the process-local LRU cache; a cached result outside the requested band still triggers bounded correction. Actual bpp is retained in checkpoint options.
 - Both diffsynth-kernels methods reconstruct BF16 weights on demand. Select layers explicitly with `target_modules` / `exclude_modules`; the backend does not apply an implicit size threshold.
 
@@ -99,6 +101,10 @@ adaptive = QuantizeConfig(
     method="diffsynth_kernels_bf16_adaptive",
     target_modules=["to_q", "to_k", "to_v"],
     backend_config_kwargs={"target_bpp": 8.0, "use_cached_lambda": True},
+)
+e8 = QuantizeConfig(
+    method="diffsynth_kernels_bf16_e8",
+    backend_config_kwargs={"target_bpp": 3.0},   # continuous rate; tile_elements=None auto-tunes decode speed
 )
 ```
 
