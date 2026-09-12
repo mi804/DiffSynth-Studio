@@ -36,6 +36,7 @@ except (ImportError, AttributeError) as error:
         BF16_MANTISSA = "bf16_mantissa"
         BF16_ADAPTIVE = "bf16_adaptive"
         BF16_E8 = "bf16_e8"
+        BF16_DIRECT_RANS = "bf16_direct_rans"
 
         def __str__(self):
             return self.value
@@ -309,6 +310,48 @@ class DiffSynthKernelsBF16E8Config(DiffSynthKernelsConfig):
         if self.tile_elements is not None:
             options["tile_elements"] = self.tile_elements
         return options
+
+
+@dataclass
+class DiffSynthKernelsBF16DirectRansConfig(DiffSynthKernelsConfig):
+    """Lossy direct-BF16 value-index quantization + Tile-ANS at a target bit rate.
+
+    Quantizes BF16 weights to <= ``num_levels`` representative BF16 values and rANS-codes the
+    uint8 value-index stream (joint coding, no byte-lane split). ``tile_elements=None`` (default)
+    selects the tile by target rate: <=2 bpp -> 32768, <=4 -> 16384, <=7 -> 8192, else 4096
+    (low bpp is quality-sensitive so uses large tiles; high bpp is overhead-insensitive so uses
+    small tiles for finer random access). Pass an int to pin a specific tile.
+    """
+
+    target_bpp: float = 3.0
+    num_levels: int = 65536
+    tile_elements: int | None = None
+    dtype: torch.dtype = field(init=False, default=torch.bfloat16)
+    compress_method: CompressionMethod = field(
+        init=False,
+        default=CompressionMethod.BF16_DIRECT_RANS,
+    )
+
+    def __post_init__(self):
+        if (
+            isinstance(self.target_bpp, bool)
+            or not isinstance(self.target_bpp, Real)
+            or not math.isfinite(float(self.target_bpp))
+            or not 1.0 <= float(self.target_bpp) <= 11.0
+        ):
+            raise ValueError("target_bpp must be finite and in [1.0, 11.0]")
+        if isinstance(self.num_levels, bool) or not isinstance(self.num_levels, int):
+            raise ValueError("num_levels must be an integer")
+        if not 2 <= self.num_levels <= 65536:
+            raise ValueError("num_levels must be in [2, 65536]")
+        super().__post_init__()
+
+    def compression_options(self):
+        return {
+            "target_bpp": self.target_bpp,
+            "num_levels": self.num_levels,
+            "tile_elements": self.tile_elements,
+        }
 
 
 class DiffSynthKernelsLinear(torch.nn.Linear):
@@ -675,6 +718,11 @@ _METHODS = (
         "diffsynth_kernels_bf16_e8",
         DiffSynthKernelsBF16E8Config,
         "Lossy E8-lattice vector quantization of BF16 weights at a target bit rate",
+    ),
+    (
+        "diffsynth_kernels_bf16_direct_rans",
+        DiffSynthKernelsBF16DirectRansConfig,
+        "Lossy direct-BF16 value-index quantization + Tile-ANS at a target bit rate",
     ),
     (
         "diffsynth_kernels_tile_ans_fp32",
