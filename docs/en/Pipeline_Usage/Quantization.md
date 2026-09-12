@@ -70,10 +70,6 @@ The following are all built-in quantization methods. `method` is the name passed
 | `torchao_nvfp4_w4a4` | torchao | NVFP4 / NVFP4 | ✅ | ❌ |
 | `comfy_kitchen_int8_w8a8` | comfy_kitchen | INT8 / INT8 dynamic | ✅ | ✅ |
 | `comfy_kitchen_fp8_w8a8` | comfy_kitchen | FP8 E4M3 / FP8 | ✅ | ✅ |
-| `diffsynth_kernels_bf16_mantissa` | diffsynth-kernels | lossy BF16 mantissa / none | ✅ | ✅ |
-| `diffsynth_kernels_bf16_adaptive` | diffsynth-kernels | configurable lossy adaptive BF16 / none | ✅ | ✅ |
-| `diffsynth_kernels_bf16_adaptive_online` | diffsynth-kernels | fast online adaptive BF16 / none | ✅ | ✅ |
-| `diffsynth_kernels_bf16_adaptive_offline` | diffsynth-kernels | strict offline adaptive BF16 / none | ✅ | ✅ |
 | `diffsynth_kernels_bf16_e8` | diffsynth-kernels | lossy E8-lattice VQ BF16 / none | ✅ | ✅ |
 
 Some notes:
@@ -82,35 +78,22 @@ Some notes:
 - **LoRA training**: only methods marked ✅ in the "LoRA Training" column can be used for quantization + LoRA training.
 - `comfy_kitchen_*` methods read and write ComfyUI's quantized weight format, interoperable with the ComfyUI ecosystem. comfy-kitchen requires CUDA 13.0 or later.
 - Formats such as MXFP8 / MXFP4 / NVFP4 have compute hardware requirements; see the [torchao](https://github.com/pytorch/ao) documentation for compatibility details.
-- `diffsynth_kernels_bf16_mantissa` keeps 0–6 explicit BF16 mantissa bits (`mantissa_bits=4` by default) and entropy-codes the rounded weights with Tile-ANS.
-- `diffsynth_kernels_bf16_adaptive` targets 1–11 bits per weight (`target_bpp=8.0` by default) with a per-tensor codebook and fixed per-row scales. Its tunable fields are `codebook_size`, `side_dtype`, `sample_rows`, `iterations`, `full_refine_steps`, `fixed_refine_steps`, `use_cached_lambda`, and the index-rANS options. It does not accept `quality` or `group_size`.
-- `diffsynth_kernels_bf16_adaptive_online` accepts the requested `target_bpp=x` and internally uses `x-0.3`, `bpp_tolerance=0.5`, 10+1 rounds, and the lambda cache for online quantization.
-- `diffsynth_kernels_bf16_adaptive_offline` uses `target_bpp=x`, `bpp_tolerance=0`, 50+2 rounds, and no cache for offline quantization before saving weights.
-- `diffsynth_kernels_bf16_e8` quantizes each row's 8-dim weight vectors to the **E8 lattice** (the densest 8-D sphere packing, +0.65 dB space-filling gain over scalar) and entropy-codes the lattice point with a custom **coset-conditioned rANS** (no codebook buffer — the point is recovered algebraically). It targets a continuous `target_bpp` (1–11, default 3.0); the lattice scale is found by a clean bisection on the real coded byte count, so there is **no lambda search, no cache, and no tolerance band**. Tunable fields: `target_bpp`, `side_dtype` (per-row scale dtype, default FP32), `prob_bits` (rANS table precision, default `None` = auto: the smallest viable precision for the data, grown automatically as the coordinate alphabet requires), `tile_elements` (default `None` = auto-pick the largest rANS tile that still saturates the GPU for the fastest decode). At 3 bpp on Z-Image-Turbo it reaches ~14% weight rel-L2, beating `bf16_adaptive` (~15.9% at the same rate).
+- `diffsynth_kernels_bf16_e8` quantizes each row's 8-dim weight vectors to the **E8 lattice** (the densest 8-D sphere packing, +0.65 dB space-filling gain over scalar) and entropy-codes the lattice point with a custom **coset-conditioned rANS** (no codebook buffer — the point is recovered algebraically). It targets a continuous `target_bpp` (1–11, default 3.0); the lattice scale is found by a clean bisection on the real coded byte count, so there is **no lambda search, no cache, and no tolerance band**. Tunable fields: `target_bpp`, `side_dtype` (per-row scale dtype, default FP32), `prob_bits` (rANS table precision, default `None` = auto: the smallest viable precision for the data, grown automatically as the coordinate alphabet requires), `tile_elements` (default `None` = auto-pick the largest rANS tile that still saturates the GPU for the fastest decode). At 3 bpp on Z-Image-Turbo it reaches ~14% weight rel-L2.
 - In diffsynth-kernels the scheme is now named **`lattice_rans`** and is no longer BF16-only: the quantizer works entirely in FP32, so the container dtype only enters when reading the weight and when rounding the reconstruction back. Every container `tile_ans` accepts (FP32 / FP16 / FP8 / integer / bool) is supported; this backend's config still converts weights to BF16 first, so its behaviour is unchanged. Note that integer and FP8 containers stop improving once the rate passes their own lossless entropy (per-row-scaled int8 reaches zero error around 9 bpp), so extra rate buys nothing there.
 - **When the accuracy requirement is tight (say weight rel-L2 below 0.1%), prefer lossless `tile_ans`**: in that regime a lossy scheme already costs about as many bits as lossless coding itself (~11 bpp on BF16), so lossless is both more accurate and distortion-free. This is documentation guidance only; the code never switches methods or caps the rate on its own.
-- In the configurable method, `use_cached_lambda=True` enables the process-local LRU cache; a cached result outside the requested band still triggers bounded correction. Actual bpp is retained in checkpoint options.
-- Both diffsynth-kernels methods reconstruct BF16 weights on demand. Select layers explicitly with `target_modules` / `exclude_modules`; the backend does not apply an implicit size threshold.
+- Actual bpp is retained in checkpoint options.
+- diffsynth-kernels methods reconstruct BF16 weights on demand. Select layers explicitly with `target_modules` / `exclude_modules`; the lossy method codes each row as 8-dim vectors, so weights must be 2D with a column count divisible by 8, and layers that do not qualify must be excluded.
 
 For example:
 
 ```python
-mantissa = QuantizeConfig(
-    method="diffsynth_kernels_bf16_mantissa",
-    backend_config_kwargs={"mantissa_bits": 4},
-)
-adaptive = QuantizeConfig(
-    method="diffsynth_kernels_bf16_adaptive",
-    target_modules=["to_q", "to_k", "to_v"],
-    backend_config_kwargs={"target_bpp": 8.0, "use_cached_lambda": True},
-)
 e8 = QuantizeConfig(
     method="diffsynth_kernels_bf16_e8",
     backend_config_kwargs={"target_bpp": 3.0},   # continuous rate; tile_elements=None auto-tunes decode speed
 )
 ```
 
-Both methods support `dynamic`, `dequant_once`, saved/pre-quantized checkpoints, CPU/disk offload, and input-gradient/LoRA flows. Lossy checkpoints use the self-describing CompressedTensor v2 header; headerless legacy buffers remain lossless-only. No model hash is registered until a corresponding artifact is intentionally released.
+The lossy and lossless methods both support `dynamic`, `dequant_once`, saved/pre-quantized checkpoints, CPU/disk offload, and input-gradient/LoRA flows. Lossy checkpoints use the self-describing CompressedTensor v2 header; headerless legacy buffers remain lossless-only. No model hash is registered until a corresponding artifact is intentionally released.
 
 You can query all available methods and their parameters in code:
 

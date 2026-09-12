@@ -12,10 +12,7 @@ from diffsynth.core.quant import (
     check_differentiable,
 )
 from diffsynth.core.quant.backends.diffsynth_kernels import (
-    DiffSynthKernelsBF16AdaptiveConfig,
-    DiffSynthKernelsBF16AdaptiveOfflineConfig,
-    DiffSynthKernelsBF16AdaptiveOnlineConfig,
-    DiffSynthKernelsBF16MantissaConfig,
+    DiffSynthKernelsBF16E8Config,
     DiffSynthKernelsLinear,
 )
 
@@ -30,6 +27,9 @@ METHODS = (
     ("diffsynth_kernels_tile_ans_fp8_e5m2", torch.float8_e5m2),
     ("diffsynth_kernels_tile_ans_fp8_e5m2fnuz", torch.float8_e5m2fnuz),
 )
+
+LOSSY_METHOD = "diffsynth_kernels_bf16_e8"
+LOSSY_KWARGS = {"execution_backend": "eager", "target_bpp": 8.0}
 
 
 def _bits(tensor):
@@ -219,8 +219,7 @@ def test_deepcopy_preserves_compressed_weight():
     "method",
     (
         "diffsynth_kernels_tile_ans_fp16",
-        "diffsynth_kernels_bf16_mantissa",
-        "diffsynth_kernels_bf16_adaptive",
+        LOSSY_METHOD,
     ),
 )
 def test_pinned_dtype_and_compress_method_reject_overrides(method):
@@ -236,30 +235,10 @@ def test_pinned_dtype_and_compress_method_reject_overrides(method):
         )
 
 
-LOSSY_METHODS = (
-    (
-        "diffsynth_kernels_bf16_mantissa",
-        {"execution_backend": "eager", "mantissa_bits": 4},
-    ),
-    (
-        "diffsynth_kernels_bf16_adaptive",
-        {
-            "execution_backend": "eager",
-            "target_bpp": 8.0,
-            "codebook_size": 32,
-            "sample_rows": 16,
-            "iterations": 1,
-            "full_refine_steps": 1,
-            "fixed_refine_steps": 1,
-        },
-    ),
-)
-
-
-def _lossy_config(method, kwargs, **config_kwargs):
+def _lossy_config(**config_kwargs):
     return QuantizeConfig(
-        method=method,
-        backend_config_kwargs=kwargs,
+        method=LOSSY_METHOD,
+        backend_config_kwargs=LOSSY_KWARGS,
         **config_kwargs,
     )
 
@@ -268,81 +247,56 @@ def _lossy_model():
     return torch.nn.Sequential(torch.nn.Linear(512, 64, dtype=torch.float32))
 
 
-def test_lossy_methods_are_registered_with_final_defaults():
-    assert QUANT_METHODS["diffsynth_kernels_bf16_mantissa"].backend == "diffsynth_kernels"
-    assert QUANT_METHODS["diffsynth_kernels_bf16_adaptive"].backend == "diffsynth_kernels"
-    assert QUANT_METHODS["diffsynth_kernels_bf16_adaptive_online"].backend == "diffsynth_kernels"
-    assert QUANT_METHODS["diffsynth_kernels_bf16_adaptive_offline"].backend == "diffsynth_kernels"
+def test_lossy_method_is_registered_with_final_defaults():
+    assert QUANT_METHODS[LOSSY_METHOD].backend == "diffsynth_kernels"
 
-    mantissa = DiffSynthKernelsBF16MantissaConfig()
-    assert mantissa.compress_method is dk.CompressionMethod.BF16_MANTISSA
-    assert mantissa.dtype is torch.bfloat16
-    assert mantissa.mantissa_bits == 4
-    assert (mantissa.tile_elements, mantissa.probability_bits, mantissa.raw_lane_threshold) == (
-        0,
-        0,
-        7.9,
-    )
-
-    adaptive = DiffSynthKernelsBF16AdaptiveConfig()
-    assert adaptive.compress_method is dk.CompressionMethod.BF16_ADAPTIVE
-    assert adaptive.dtype is torch.bfloat16
-    assert adaptive.target_bpp == 8.0
-    assert adaptive.bpp_tolerance == 0.5
-    assert adaptive.codebook_size is None
-    assert adaptive.side_dtype is None
-    assert adaptive.sample_rows == 512
-    assert adaptive.iterations == 10
-    assert adaptive.full_refine_steps == 1
-    assert adaptive.fixed_refine_steps == 1
-    assert adaptive.use_cached_lambda is True
-    assert (adaptive.tile_elements, adaptive.probability_bits, adaptive.raw_lane_threshold) == (
-        8192,
-        0,
-        7.9,
-    )
-
-    online = DiffSynthKernelsBF16AdaptiveOnlineConfig(target_bpp=3.0)
-    assert online.target_bpp == 3.0
-    assert online.compression_options()["target_bpp"] == pytest.approx(2.7)
-    assert online.compression_options()["bpp_tolerance"] == 0.5
-    assert online.compression_options()["iterations"] == 10
-    assert online.compression_options()["use_cached_lambda"] is True
-
-    offline = DiffSynthKernelsBF16AdaptiveOfflineConfig(target_bpp=3.0)
-    assert offline.compression_options()["target_bpp"] == 3.0
-    assert offline.compression_options()["bpp_tolerance"] == 0.0
-    assert offline.compression_options()["iterations"] == 50
-    assert offline.compression_options()["full_refine_steps"] == 2
-    assert offline.compression_options()["use_cached_lambda"] is False
+    config = DiffSynthKernelsBF16E8Config()
+    assert config.compress_method is dk.CompressionMethod.BF16_E8
+    assert config.dtype is torch.bfloat16
+    assert config.target_bpp == 3.0
+    assert config.side_dtype is None
+    assert config.prob_bits is None
+    assert config.tile_elements is None
+    assert config.row_rdo_iterations == 0
+    assert config.row_rdo_candidates == 5
+    assert config.scale_search_iterations == 12
+    assert config.scale_search_max_vectors == 262144
+    assert config.compression_options() == {
+        "target_bpp": 3.0,
+        "side_dtype": None,
+        "prob_bits": None,
+        "row_rdo_iterations": 0,
+        "row_rdo_candidates": 5,
+        "scale_search_iterations": 12,
+        "scale_search_max_vectors": 262144,
+    }
 
 
 @pytest.mark.parametrize(
-    ("config_class", "kwargs", "message"),
+    ("kwargs", "message"),
     (
-        (DiffSynthKernelsBF16MantissaConfig, {"mantissa_bits": 7}, "mantissa_bits"),
-        (DiffSynthKernelsBF16AdaptiveConfig, {"target_bpp": 0.9}, "target_bpp"),
-        (DiffSynthKernelsBF16AdaptiveConfig, {"target_bpp": 11.1}, "target_bpp"),
-        (DiffSynthKernelsBF16AdaptiveConfig, {"side_dtype": torch.float16}, "side_dtype"),
+        ({"target_bpp": 0.9}, "target_bpp"),
+        ({"target_bpp": 11.1}, "target_bpp"),
+        ({"side_dtype": torch.float16}, "side_dtype"),
+        ({"prob_bits": 8}, "prob_bits"),
     ),
 )
-def test_lossy_config_rejects_invalid_values(config_class, kwargs, message):
+def test_lossy_config_rejects_invalid_values(kwargs, message):
     with pytest.raises((TypeError, ValueError), match=message):
-        config_class.from_kwargs(kwargs)
+        DiffSynthKernelsBF16E8Config.from_kwargs(kwargs)
 
 
 @pytest.mark.parametrize("field_name", ("quality", "group_size", "dtype", "compress_method"))
-def test_adaptive_config_rejects_removed_unknown_and_pinned_fields(field_name):
+def test_lossy_config_rejects_removed_unknown_and_pinned_fields(field_name):
     with pytest.raises(ValueError, match="not accepted"):
-        DiffSynthKernelsBF16AdaptiveConfig.from_kwargs({field_name: "invalid"})
+        DiffSynthKernelsBF16E8Config.from_kwargs({field_name: "invalid"})
 
 
-@pytest.mark.parametrize(("method", "kwargs"), LOSSY_METHODS)
-def test_lossy_reconstruction_uses_shared_linear(method, kwargs):
+def test_lossy_reconstruction_uses_shared_linear():
     torch.manual_seed(10)
     model = _lossy_model()
     original = model[0].weight.detach().to(torch.bfloat16)
-    config = _lossy_config(method, kwargs)
+    config = _lossy_config()
 
     config.quantize_model(model)
 
@@ -359,11 +313,10 @@ def test_lossy_reconstruction_uses_shared_linear(method, kwargs):
     assert relative_error < 0.1
 
 
-@pytest.mark.parametrize(("method", "kwargs"), LOSSY_METHODS)
-def test_lossy_v2_state_dict_and_safetensors_roundtrip(tmp_path, method, kwargs):
+def test_lossy_v2_state_dict_and_safetensors_roundtrip(tmp_path):
     torch.manual_seed(11)
     source = _lossy_model()
-    config = _lossy_config(method, kwargs)
+    config = _lossy_config()
     config.quantize_model(source)
     state = source.state_dict()
     assert state["0._diffsynth_kernels.header"].dtype is torch.uint8
@@ -380,7 +333,7 @@ def test_lossy_v2_state_dict_and_safetensors_roundtrip(tmp_path, method, kwargs)
         assert torch.equal(actual.buffers[name], expected.buffers[name])
 
     tensors, metadata = config.flatten_state_dict(state)
-    path = tmp_path / f"{method}.safetensors"
+    path = tmp_path / f"{LOSSY_METHOD}.safetensors"
     save_file(tensors, path, metadata=metadata)
     from_file = _lossy_model()
     config.prepare_for_prequantized_load(from_file, compute_dtype=torch.float32)
@@ -397,9 +350,9 @@ def test_lossy_v2_state_dict_and_safetensors_roundtrip(tmp_path, method, kwargs)
 
 def test_set_compressed_rejects_wrong_method_dtype_codec_and_buffer_schema():
     weight = torch.randn(8, 16, dtype=torch.bfloat16)
-    mantissa = dk.compress(
+    lossy = dk.compress(
         weight,
-        compress_method=dk.CompressionMethod.BF16_MANTISSA,
+        compress_method=dk.CompressionMethod.BF16_E8,
         execution_backend="eager",
     )
     dfloat = dk.compress(
@@ -413,35 +366,32 @@ def test_set_compressed_rejects_wrong_method_dtype_codec_and_buffer_schema():
         bias=False,
         compute_dtype=torch.float32,
         compression_dtype=torch.bfloat16,
-        compress_method=dk.CompressionMethod.BF16_MANTISSA,
+        compress_method=dk.CompressionMethod.BF16_E8,
         execution_backend="eager",
     )
 
     with pytest.raises(ValueError, match="method"):
         shell._set_compressed(dfloat)
 
-    wrong_dtype = copy.deepcopy(mantissa)
+    wrong_dtype = copy.deepcopy(lossy)
     wrong_dtype.dtype = torch.float16
     with pytest.raises(ValueError, match="dtype"):
         shell._set_compressed(wrong_dtype)
 
-    wrong_codec = copy.deepcopy(mantissa)
+    wrong_codec = copy.deepcopy(lossy)
     wrong_codec.header["codec_version"] += 1
     with pytest.raises(ValueError, match="codec version"):
         shell._set_compressed(wrong_codec)
 
-    wrong_buffers = copy.deepcopy(mantissa)
+    wrong_buffers = copy.deepcopy(lossy)
     wrong_buffers.buffers.pop(next(iter(wrong_buffers.buffers)))
     with pytest.raises(ValueError, match="buffers"):
         shell._set_compressed(wrong_buffers)
 
 
 def test_lossy_requires_v2_header_and_rejects_headerless_buffers():
-    model = torch.nn.Sequential(torch.nn.Linear(16, 8))
-    config = _lossy_config(
-        "diffsynth_kernels_bf16_mantissa",
-        {"execution_backend": "eager"},
-    )
+    model = torch.nn.Sequential(torch.nn.Linear(512, 64))
+    config = _lossy_config()
     config.quantize_model(model)
     compressed = model[0]._compressed()
 
@@ -449,7 +399,7 @@ def test_lossy_requires_v2_header_and_rejects_headerless_buffers():
     v1.header.update(
         version=1,
         format_id="bf16",
-        method_id=dk.CompressionMethod.BF16_MANTISSA,
+        method_id=dk.CompressionMethod.BF16_E8,
     )
     with pytest.raises(ValueError, match="standard v2 header"):
         model[0]._set_compressed(v1)
@@ -458,7 +408,7 @@ def test_lossy_requires_v2_header_and_rejects_headerless_buffers():
         **{f"0.{name}": value for name, value in compressed.buffers.items()},
         "0.bias": model[0].bias,
     }
-    shell = torch.nn.Sequential(torch.nn.Linear(16, 8))
+    shell = torch.nn.Sequential(torch.nn.Linear(512, 64))
     config.prepare_for_prequantized_load(shell, compute_dtype=torch.float32)
     with pytest.raises(RuntimeError, match="headerless.*only supported by lossless"):
         shell.load_state_dict(legacy_state, assign=True)
@@ -473,9 +423,9 @@ def test_mixed_lossless_and_lossy_methods_roundtrip():
                 backend_config_kwargs={"execution_backend": "eager"},
             ),
             QuantizeConfig(
-                method="diffsynth_kernels_bf16_adaptive",
+                method=LOSSY_METHOD,
                 target_modules=["lossy"],
-                backend_config_kwargs=LOSSY_METHODS[1][1],
+                backend_config_kwargs=LOSSY_KWARGS,
             ),
         ]
     )
@@ -509,10 +459,7 @@ def test_mixed_lossless_and_lossy_methods_roundtrip():
 
 def test_lossy_dtype_preserving_apply_and_deepcopy():
     model = _lossy_model()
-    config = _lossy_config(
-        "diffsynth_kernels_bf16_mantissa",
-        {"execution_backend": "eager"},
-    )
+    config = _lossy_config()
     config.quantize_model(model)
     original = {
         name: (buffer.dtype, buffer.clone())
@@ -533,11 +480,7 @@ def test_lossy_dtype_preserving_apply_and_deepcopy():
 def test_lossy_dequant_once_restores_plain_linear():
     torch.manual_seed(12)
     model = _lossy_model()
-    config = _lossy_config(
-        "diffsynth_kernels_bf16_mantissa",
-        {"execution_backend": "eager"},
-        mode="dequant_once",
-    )
+    config = _lossy_config(mode="dequant_once")
     config.quantize_model(model)
     expected = dk.decompress(model[0]._compressed(), execution_backend="eager")
 
@@ -547,11 +490,10 @@ def test_lossy_dequant_once_restores_plain_linear():
     assert torch.equal(_bits(model[0].weight), _bits(expected))
 
 
-@pytest.mark.parametrize(("method", "kwargs"), LOSSY_METHODS)
-def test_lossy_input_and_lora_branch_gradients(method, kwargs):
+def test_lossy_input_and_lora_branch_gradients():
     torch.manual_seed(13)
     model = _lossy_model()
-    config = _lossy_config(method, kwargs)
+    config = _lossy_config()
     config.quantize_model(model)
     assert check_differentiable(model[0], verbose=False)
 
@@ -568,11 +510,8 @@ def test_lossy_input_and_lora_branch_gradients(method, kwargs):
     assert all(not buffer.requires_grad for buffer in model[0]._compressed().buffers.values())
 
 
-def test_mantissa_has_no_hidden_minimum_layer_size():
+def test_lossy_rejects_shapes_the_codec_cannot_tile():
+    # lattice_rans codes 8-dim vectors per row, so a row shorter than 8 has no vector plane.
     model = torch.nn.Sequential(torch.nn.Linear(1, 1, bias=False))
-    config = _lossy_config(
-        "diffsynth_kernels_bf16_mantissa",
-        {"execution_backend": "eager"},
-    )
-    config.quantize_model(model)
-    assert isinstance(model[0], DiffSynthKernelsLinear)
+    with pytest.raises(ValueError, match="multiple of 8"):
+        _lossy_config().quantize_model(model)
