@@ -1,0 +1,45 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Read(*)",
+      "Edit(/mnt/nas1/zhanghong/project26/main_project/opencode/**)",
+      "Write(/mnt/nas1/zhanghong/project26/main_project/opencode/**)",
+      "Bash(claude skill:*)",
+      "Bash(claude plugin:*)",
+      "Bash(conda env:*)",
+      "Bash(conda activate:*)",
+      "Bash(pip list:*)",
+      "Bash(conda run:*)",
+      "Bash(conda info:*)",
+      "Bash(ls:*)",
+      "Bash(pip install:*)",
+      "Bash(python:*)",
+      "Bash(nvidia-smi:*)",
+      "Bash(chmod:*)",
+      "Bash(mkdir -p /mnt/nas1/zhanghong/project26/main_project/opencode/packages/DiffSynth-Studio/models/jd-opensource)",
+      "Bash(ln -sf /root/.cache/modelscope/hub/models/jd-opensource/JoyAI-Image-Edit /mnt/nas1/zhanghong/project26/main_project/opencode/packages/DiffSynth-Studio/models/jd-opensource/JoyAI-Image-Edit)",
+      "Bash(ln -sf /mnt/nas1/zhanghong/project26/main_project/opencode/packages/DiffSynth-Studio/models /mnt/nas1/zhanghong/project26/main_project/opencode/packages/JoyAI-Image/models)",
+      "Read(/mnt/**)",
+      "Read(/root/.cache/modelscope/hub/**)",
+      "Read(/mnt/nas1/zhanghong/project26/main_project/opencode/**)",
+      "Read(//mnt/nas1/zhanghong/project26/main_project/DiffSynth-Studio/**)",
+      "Read(//mnt/nas1/zhanghong/**)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:api.github.com)",
+      "Edit(/.claude/skills/diffsynth-integrator/**)",
+      "WebFetch(domain:modelscope.cn)",
+      "WebSearch"
+    ],
+    "defaultMode": "auto",
+    "additionalDirectories": [
+      "/mnt/nas1/zhanghong/diffsynth_models",
+      "/mnt/nas1/zhanghong/project26/main_project/opencode/packages/ernie-image/.sisyphus/execution-logs/latest/scripts",
+      "/mnt/workspace/zhanghong/project26/main_project/opencode/packages/ernie-image/.sisyphus/execution-logs/20260411_142659_pipeline_text2image_with_pe/scripts"
+    ]
+  },
+  "sandbox": {
+    "enabled": false,
+    "autoAllowBashIfSandboxed": false
+  }
+}
