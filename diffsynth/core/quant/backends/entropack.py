@@ -1,7 +1,6 @@
 import json
 import math
 from dataclasses import dataclass, field
-from enum import Enum
 from numbers import Real
 
 import torch
@@ -12,11 +11,12 @@ from ..config import register_quant_method
 try:
     import entropack as ep
 
-    CompressionMethod = ep.CompressionMethod
     _REQUIRED_ENTROPACK_API = (
-        CompressionMethod.LATTICE_RANS,
-        ep.CompressionKind,
+        ep.CompressedTensor,
+        ep.compress,
+        ep.decompress,
         ep.resolve_compression,
+        ep.supported_methods,
     )
     ENTROPACK_AVAILABLE = True
     _ENTROPACK_IMPORT_ERROR = None
@@ -24,17 +24,6 @@ except (ImportError, AttributeError) as error:
     ep = None
     ENTROPACK_AVAILABLE = False
     _ENTROPACK_IMPORT_ERROR = error
-
-    class CompressionMethod(str, Enum):
-        """Keep this optional backend importable until its dependency is installed."""
-
-        DEFAULT = "default"
-        DFLOAT11 = "dfloat11"
-        TILE_ANS = "tile_ans"
-        LATTICE_RANS = "lattice_rans"
-
-        def __str__(self):
-            return self.value
 
 
 @dataclass
@@ -65,10 +54,7 @@ class EntroPackTileANSConfig(EntroPackConfig):
     probability_bits: int = 0
     raw_lane_threshold: float = 7.9
     dtype: torch.dtype = field(init=False, default=None)
-    compress_method: CompressionMethod = field(
-        init=False,
-        default=CompressionMethod.TILE_ANS,
-    )
+    compress_method: str = field(init=False, default="tile_ans")
 
     def compression_options(self):
         return {
@@ -132,10 +118,7 @@ class EntroPackDFloat11BF16Config(EntroPackConfig):
     bytes_per_thread: int = 16
     threads_per_block: int = 128
     dtype: torch.dtype = field(init=False, default=torch.bfloat16)
-    compress_method: CompressionMethod = field(
-        init=False,
-        default=CompressionMethod.DFLOAT11,
-    )
+    compress_method: str = field(init=False, default="dfloat11")
 
     def compression_options(self):
         return {
@@ -145,7 +128,7 @@ class EntroPackDFloat11BF16Config(EntroPackConfig):
 
 
 @dataclass
-class EntroPackBF16E8Config(EntroPackConfig):
+class EntroPackLatticeRANSBF16Config(EntroPackConfig):
     """Lossy E8-lattice VQ at a target bit rate.
 
     Continuous ``target_bpp`` in [1, 11] (the lattice scale is found by a clean bisection on the
@@ -165,10 +148,7 @@ class EntroPackBF16E8Config(EntroPackConfig):
     scale_search_iterations: int = 12
     scale_search_max_vectors: int = 262144
     dtype: torch.dtype = field(init=False, default=torch.bfloat16)
-    compress_method: CompressionMethod = field(
-        init=False,
-        default=CompressionMethod.LATTICE_RANS,
-    )
+    compress_method: str = field(init=False, default="lattice_rans")
 
     def __post_init__(self):
         if (
@@ -227,8 +207,7 @@ class EntroPackLinear(torch.nn.Linear):
             compress_method=compress_method,
         )
         self.compress_method = resolved.compress_method
-        self.compression_kind = resolved.compression_kind
-        self._compression_codec_version = resolved.codec_version
+        self.lossless = resolved.lossless
         self._compression_buffer_names = resolved.buffer_names
         for name in self._compression_buffer_names:
             self.register_buffer(name, None, persistent=False)
@@ -268,21 +247,6 @@ class EntroPackLinear(torch.nn.Linear):
                 f"Compressed weight method '{compressed.compress_method}' does not match "
                 f"configured method '{self.compress_method}'"
             )
-        if compressed.compression_kind != self.compression_kind:
-            raise ValueError(
-                f"Compressed weight kind '{compressed.compression_kind}' does not match "
-                f"configured kind '{self.compression_kind}'"
-            )
-        if compressed.codec_version != self._compression_codec_version:
-            raise ValueError(
-                f"Compressed weight codec version {compressed.codec_version} does not match "
-                f"configured version {self._compression_codec_version}"
-            )
-        if (
-            compressed.compression_kind == ep.CompressionKind.LOSSY
-            and compressed.header.get("version") != ep.ENVELOPE_VERSION
-        ):
-            raise ValueError("Lossy compressed weights require a standard v2 header")
         if set(compressed.buffers) != set(self._compression_buffer_names):
             raise ValueError(
                 f"Compressed buffers {sorted(compressed.buffers)} do not match expected "
@@ -341,11 +305,11 @@ class EntroPackLinear(torch.nn.Linear):
                 if prefix + name in state_dict
             }
             if legacy:
-                if self.compression_kind != ep.CompressionKind.LOSSLESS:
+                if not self.lossless:
                     error_msgs.append(
                         f"Legacy headerless compressed buffers for '{prefix[:-1]}' are only "
                         "supported by lossless entropack methods; lossy weights "
-                        "require a standard v2 header"
+                        "require a standard header"
                     )
                 elif set(legacy) != set(self._compression_buffer_names):
                     error_msgs.append(
@@ -355,9 +319,7 @@ class EntroPackLinear(torch.nn.Linear):
                     self._set_compressed(
                         ep.CompressedTensor(
                             header={
-                                "version": ep.ENVELOPE_VERSION,
                                 "compress_method": self.compress_method,
-                                "codec_version": self._compression_codec_version,
                                 "resolved_options": {},
                             },
                             buffers=legacy,
@@ -537,8 +499,8 @@ class EntroPackQuantBackend(QuantBackend):
 
 _METHODS = (
     (
-        "entropack_bf16_e8",
-        EntroPackBF16E8Config,
+        "entropack_lattice_rans_bf16",
+        EntroPackLatticeRANSBF16Config,
         "Lossy E8-lattice vector quantization of BF16 weights at a target bit rate",
     ),
     (
@@ -593,9 +555,9 @@ for method_name, config_class, label in _METHODS:
 
 
 __all__ = [
-    "EntroPackBF16E8Config",
     "EntroPackConfig",
     "EntroPackDFloat11BF16Config",
+    "EntroPackLatticeRANSBF16Config",
     "EntroPackLinear",
     "EntroPackQuantBackend",
     "EntroPackTileANSBF16Config",

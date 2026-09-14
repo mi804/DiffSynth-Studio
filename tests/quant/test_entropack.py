@@ -12,7 +12,7 @@ from diffsynth.core.quant import (
     check_differentiable,
 )
 from diffsynth.core.quant.backends.entropack import (
-    EntroPackBF16E8Config,
+    EntroPackLatticeRANSBF16Config,
     EntroPackLinear,
 )
 
@@ -28,7 +28,7 @@ METHODS = (
     ("entropack_tile_ans_fp8_e5m2fnuz", torch.float8_e5m2fnuz),
 )
 
-LOSSY_METHOD = "entropack_bf16_e8"
+LOSSY_METHOD = "entropack_lattice_rans_bf16"
 LOSSY_KWARGS = {"execution_backend": "eager", "target_bpp": 8.0}
 
 
@@ -250,8 +250,8 @@ def _lossy_model():
 def test_lossy_method_is_registered_with_final_defaults():
     assert QUANT_METHODS[LOSSY_METHOD].backend == "entropack"
 
-    config = EntroPackBF16E8Config()
-    assert config.compress_method is ep.CompressionMethod.BF16_E8
+    config = EntroPackLatticeRANSBF16Config()
+    assert config.compress_method == "lattice_rans"
     assert config.dtype is torch.bfloat16
     assert config.target_bpp == 3.0
     assert config.side_dtype is None
@@ -283,13 +283,13 @@ def test_lossy_method_is_registered_with_final_defaults():
 )
 def test_lossy_config_rejects_invalid_values(kwargs, message):
     with pytest.raises((TypeError, ValueError), match=message):
-        EntroPackBF16E8Config.from_kwargs(kwargs)
+        EntroPackLatticeRANSBF16Config.from_kwargs(kwargs)
 
 
 @pytest.mark.parametrize("field_name", ("quality", "group_size", "dtype", "compress_method"))
 def test_lossy_config_rejects_removed_unknown_and_pinned_fields(field_name):
     with pytest.raises(ValueError, match="not accepted"):
-        EntroPackBF16E8Config.from_kwargs({field_name: "invalid"})
+        EntroPackLatticeRANSBF16Config.from_kwargs({field_name: "invalid"})
 
 
 def test_lossy_reconstruction_uses_shared_linear():
@@ -302,9 +302,9 @@ def test_lossy_reconstruction_uses_shared_linear():
 
     assert type(model[0]) is EntroPackLinear
     compressed = model[0]._compressed()
-    assert compressed.header["version"] == ep.ENVELOPE_VERSION == 2
-    assert compressed.compression_kind is ep.CompressionKind.LOSSY
-    assert model[0].compression_kind is ep.CompressionKind.LOSSY
+    assert set(compressed.header) == {"compress_method", "resolved_options"}
+    assert compressed.lossless is False
+    assert model[0].lossless is False
     restored = ep.decompress(compressed, execution_backend="eager")
     assert restored.dtype is torch.bfloat16
     assert restored.shape == original.shape
@@ -328,7 +328,7 @@ def test_lossy_v2_state_dict_and_safetensors_roundtrip(tmp_path):
     expected = source[0]._compressed()
     actual = restored[0]._compressed()
     assert actual.header == expected.header
-    assert actual.compression_kind is ep.CompressionKind.LOSSY
+    assert actual.lossless is False
     for name in expected.buffers:
         assert torch.equal(actual.buffers[name], expected.buffers[name])
 
@@ -348,16 +348,16 @@ def test_lossy_v2_state_dict_and_safetensors_roundtrip(tmp_path):
     assert torch.equal(from_file(x), source(x))
 
 
-def test_set_compressed_rejects_wrong_method_dtype_codec_and_buffer_schema():
+def test_set_compressed_rejects_wrong_method_dtype_and_buffer_schema():
     weight = torch.randn(8, 16, dtype=torch.bfloat16)
     lossy = ep.compress(
         weight,
-        compress_method=ep.CompressionMethod.BF16_E8,
+        compress_method="lattice_rans",
         execution_backend="eager",
     )
     dfloat = ep.compress(
         weight,
-        compress_method=ep.CompressionMethod.DFLOAT11,
+        compress_method="dfloat11",
         execution_backend="eager",
     )
     shell = EntroPackLinear(
@@ -366,7 +366,7 @@ def test_set_compressed_rejects_wrong_method_dtype_codec_and_buffer_schema():
         bias=False,
         compute_dtype=torch.float32,
         compression_dtype=torch.bfloat16,
-        compress_method=ep.CompressionMethod.BF16_E8,
+        compress_method="lattice_rans",
         execution_backend="eager",
     )
 
@@ -378,31 +378,17 @@ def test_set_compressed_rejects_wrong_method_dtype_codec_and_buffer_schema():
     with pytest.raises(ValueError, match="dtype"):
         shell._set_compressed(wrong_dtype)
 
-    wrong_codec = copy.deepcopy(lossy)
-    wrong_codec.header["codec_version"] += 1
-    with pytest.raises(ValueError, match="codec version"):
-        shell._set_compressed(wrong_codec)
-
     wrong_buffers = copy.deepcopy(lossy)
     wrong_buffers.buffers.pop(next(iter(wrong_buffers.buffers)))
     with pytest.raises(ValueError, match="buffers"):
         shell._set_compressed(wrong_buffers)
 
 
-def test_lossy_requires_v2_header_and_rejects_headerless_buffers():
+def test_lossy_rejects_headerless_buffers():
     model = torch.nn.Sequential(torch.nn.Linear(512, 64))
     config = _lossy_config()
     config.quantize_model(model)
     compressed = model[0]._compressed()
-
-    v1 = copy.deepcopy(compressed)
-    v1.header.update(
-        version=1,
-        format_id="bf16",
-        method_id=ep.CompressionMethod.BF16_E8,
-    )
-    with pytest.raises(ValueError, match="standard v2 header"):
-        model[0]._set_compressed(v1)
 
     legacy_state = {
         **{f"0.{name}": value for name, value in compressed.buffers.items()},
@@ -447,8 +433,8 @@ def test_mixed_lossless_and_lossy_methods_roundtrip():
     config.prepare_for_prequantized_load(restored, compute_dtype=torch.float32)
     restored.load_state_dict(config.unflatten_state_dict(state, metadata), assign=True)
 
-    assert restored["lossless"].compression_kind is ep.CompressionKind.LOSSLESS
-    assert restored["lossy"].compression_kind is ep.CompressionKind.LOSSY
+    assert restored["lossless"].lossless is True
+    assert restored["lossy"].lossless is False
     lossless_input = torch.randn(2, 64)
     assert torch.equal(
         restored["lossless"](lossless_input), source["lossless"](lossless_input)

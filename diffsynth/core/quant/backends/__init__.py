@@ -4,7 +4,7 @@ _LAZY_BACKENDS = {
     "bitsandbytes": ".bitsandbytes",
     "torchao": ".torchao",
     "comfy_kitchen": ".comfy_kitchen",
-    "entropack_bf16_e8": ".entropack",
+    "entropack_lattice_rans_bf16": ".entropack",
     "entropack_tile_ans_fp32": ".entropack",
     "entropack_tile_ans_fp16": ".entropack",
     "entropack_dfloat11_bf16": ".entropack",

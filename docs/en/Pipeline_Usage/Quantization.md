@@ -70,7 +70,7 @@ The following are all built-in quantization methods. `method` is the name passed
 | `torchao_nvfp4_w4a4` | torchao | NVFP4 / NVFP4 | ✅ | ❌ |
 | `comfy_kitchen_int8_w8a8` | comfy_kitchen | INT8 / INT8 dynamic | ✅ | ✅ |
 | `comfy_kitchen_fp8_w8a8` | comfy_kitchen | FP8 E4M3 / FP8 | ✅ | ✅ |
-| `entropack_bf16_e8` | entropack | lossy E8-lattice VQ BF16 / none | ✅ | ✅ |
+| `entropack_lattice_rans_bf16` | entropack | lossy E8-lattice VQ BF16 / none | ✅ | ✅ |
 
 Some notes:
 
@@ -78,7 +78,7 @@ Some notes:
 - **LoRA training**: only methods marked ✅ in the "LoRA Training" column can be used for quantization + LoRA training.
 - `comfy_kitchen_*` methods read and write ComfyUI's quantized weight format, interoperable with the ComfyUI ecosystem. comfy-kitchen requires CUDA 13.0 or later.
 - Formats such as MXFP8 / MXFP4 / NVFP4 have compute hardware requirements; see the [torchao](https://github.com/pytorch/ao) documentation for compatibility details.
-- `entropack_bf16_e8` quantizes each row's 8-dim weight vectors to the **E8 lattice** (the densest 8-D sphere packing, +0.65 dB space-filling gain over scalar) and entropy-codes the lattice point with a custom **coset-conditioned rANS** (no codebook buffer — the point is recovered algebraically). It targets a continuous `target_bpp` (1–11, default 3.0); the lattice scale is found by a clean bisection on the real coded byte count, so there is **no lambda search, no cache, and no tolerance band**. Tunable fields: `target_bpp`, `side_dtype` (per-row scale dtype, default FP32), `prob_bits` (rANS table precision, default `None` = auto: the smallest viable precision for the data, grown automatically as the coordinate alphabet requires), `tile_elements` (default `None` = the format default of 16384 elements, i.e. a tile of `max(32, tile_elements // 9)` = 1820 complete lattice vectors, since nine symbols are coded per vector; it trades stored rate against decode parallelism, because each tile carries 128 B of terminal rANS state and one warp decodes one tile, so it is a format parameter rather than something the backend picks per GPU). Decode launch geometry is derived from the queried device at run time and needs no configuration. At 3 bpp on Z-Image-Turbo it reaches ~14% weight rel-L2.
+- `entropack_lattice_rans_bf16` quantizes each row's 8-dim weight vectors to the **E8 lattice** (the densest 8-D sphere packing, +0.65 dB space-filling gain over scalar) and entropy-codes the lattice point with a custom **coset-conditioned rANS** (no codebook buffer — the point is recovered algebraically). It targets a continuous `target_bpp` (1–11, default 3.0); the lattice scale is found by a clean bisection on the real coded byte count, so there is **no lambda search, no cache, and no tolerance band**. Tunable fields: `target_bpp`, `side_dtype` (per-row scale dtype, default FP32), `prob_bits` (rANS table precision, default `None` = auto: the smallest viable precision for the data, grown automatically as the coordinate alphabet requires), `tile_elements` (default `None` = the format default of 16384 elements, i.e. a tile of `max(32, tile_elements // 9)` = 1820 complete lattice vectors, since nine symbols are coded per vector; it trades stored rate against decode parallelism, because each tile carries 128 B of terminal rANS state and one warp decodes one tile, so it is a format parameter rather than something the backend picks per GPU). Decode launch geometry is derived from the queried device at run time and needs no configuration. At 3 bpp on Z-Image-Turbo it reaches ~14% weight rel-L2.
 - In EntroPack the scheme is named **`lattice_rans`** and is no longer BF16-only: the quantizer works entirely in FP32, so the container dtype only enters when reading the weight and when rounding the reconstruction back. Every container `tile_ans` accepts (FP32 / FP16 / FP8 / integer / bool) is supported; this backend's config still converts weights to BF16 first, so its behaviour is unchanged. Note that integer and FP8 containers stop improving once the rate passes their own lossless entropy (per-row-scaled int8 reaches zero error around 9 bpp), so extra rate buys nothing there.
 - **When the accuracy requirement is tight (say weight rel-L2 below 0.1%), prefer lossless `tile_ans`**: in that regime a lossy scheme already costs about as many bits as lossless coding itself (~11 bpp on BF16), so lossless is both more accurate and distortion-free. This is documentation guidance only; the code never switches methods or caps the rate on its own.
 - Actual bpp is retained in checkpoint options.
@@ -88,7 +88,7 @@ For example:
 
 ```python
 e8 = QuantizeConfig(
-    method="entropack_bf16_e8",
+    method="entropack_lattice_rans_bf16",
     backend_config_kwargs={"target_bpp": 3.0},   # continuous rate; decode launch geometry derives from the device
 )
 ```
