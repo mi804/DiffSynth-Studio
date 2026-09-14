@@ -14,7 +14,7 @@ try:
 
     CompressionMethod = ep.CompressionMethod
     _REQUIRED_ENTROPACK_API = (
-        CompressionMethod.BF16_E8,
+        CompressionMethod.LATTICE_RANS,
         ep.CompressionKind,
         ep.resolve_compression,
     )
@@ -32,7 +32,6 @@ except (ImportError, AttributeError) as error:
         DFLOAT11 = "dfloat11"
         TILE_ANS = "tile_ans"
         LATTICE_RANS = "lattice_rans"
-        BF16_E8 = "bf16_e8"
 
         def __str__(self):
             return self.value
@@ -168,7 +167,7 @@ class EntroPackBF16E8Config(EntroPackConfig):
     dtype: torch.dtype = field(init=False, default=torch.bfloat16)
     compress_method: CompressionMethod = field(
         init=False,
-        default=CompressionMethod.BF16_E8,
+        default=CompressionMethod.LATTICE_RANS,
     )
 
     def __post_init__(self):
