@@ -496,8 +496,15 @@ def test_lossy_input_and_lora_branch_gradients():
     assert all(not buffer.requires_grad for buffer in model[0]._compressed().buffers.values())
 
 
-def test_lossy_rejects_shapes_the_codec_cannot_tile():
-    # lattice_rans codes 8-dim vectors per row, so a row shorter than 8 has no vector plane.
-    model = torch.nn.Sequential(torch.nn.Linear(1, 1, bias=False))
-    with pytest.raises(ValueError, match="multiple of 8"):
+def test_lossy_pads_shapes_the_vector_plane_cannot_tile():
+    # lattice_rans codes 8-dim vectors per row, so a ragged row is zero-padded inside the codec.
+    # The padding must stay invisible here: the layer keeps its real in_features, the compressed
+    # tensor reports the real shape, and a forward still runs. 3420 is the column count of
+    # Qwen-Image's visual-tower down_proj, which is what surfaced this.
+    for in_features, out_features in ((3420, 128), (1001, 64), (1, 1)):
+        model = torch.nn.Sequential(torch.nn.Linear(in_features, out_features, bias=False))
         _lossy_config().quantize_model(model)
+        assert type(model[0]) is EntroPackLinear
+        assert model[0].in_features == in_features
+        assert model[0]._compressed().shape == (out_features, in_features)
+        assert model[0](torch.randn(2, in_features)).shape == (2, out_features)
