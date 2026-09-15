@@ -254,7 +254,6 @@ def test_lossy_method_is_registered_with_final_defaults():
     assert config.compress_method == "lattice_rans"
     assert config.dtype is torch.bfloat16
     assert config.target_bpp == 3.0
-    assert config.side_dtype is None
     assert config.prob_bits is None
     assert config.tile_elements is None
     assert config.row_rdo_iterations == 0
@@ -263,7 +262,6 @@ def test_lossy_method_is_registered_with_final_defaults():
     assert config.scale_search_max_vectors == 262144
     assert config.compression_options() == {
         "target_bpp": 3.0,
-        "side_dtype": None,
         "prob_bits": None,
         "row_rdo_iterations": 0,
         "row_rdo_candidates": 5,
@@ -277,7 +275,6 @@ def test_lossy_method_is_registered_with_final_defaults():
     (
         ({"target_bpp": 0.9}, "target_bpp"),
         ({"target_bpp": 11.1}, "target_bpp"),
-        ({"side_dtype": torch.float16}, "side_dtype"),
         ({"prob_bits": 8}, "prob_bits"),
     ),
 )
@@ -286,7 +283,7 @@ def test_lossy_config_rejects_invalid_values(kwargs, message):
         EntroPackLatticeRANSBF16Config.from_kwargs(kwargs)
 
 
-@pytest.mark.parametrize("field_name", ("quality", "group_size", "dtype", "compress_method"))
+@pytest.mark.parametrize("field_name", ("quality", "group_size", "dtype", "compress_method", "side_dtype"))
 def test_lossy_config_rejects_removed_unknown_and_pinned_fields(field_name):
     with pytest.raises(ValueError, match="not accepted"):
         EntroPackLatticeRANSBF16Config.from_kwargs({field_name: "invalid"})

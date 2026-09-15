@@ -140,7 +140,6 @@ class EntroPackLatticeRANSBF16Config(EntroPackConfig):
     """
 
     target_bpp: float = 3.0
-    side_dtype: torch.dtype | None = None
     prob_bits: int | None = None
     tile_elements: int | None = None
     row_rdo_iterations: int = 0
@@ -160,11 +159,9 @@ class EntroPackLatticeRANSBF16Config(EntroPackConfig):
             raise ValueError("target_bpp must be finite and in [1.0, 11.0]")
         super().__post_init__()
 
-
     def compression_options(self):
         options = {
             "target_bpp": self.target_bpp,
-            "side_dtype": self.side_dtype,
             "prob_bits": self.prob_bits,
             "row_rdo_iterations": self.row_rdo_iterations,
             "row_rdo_candidates": self.row_rdo_candidates,
