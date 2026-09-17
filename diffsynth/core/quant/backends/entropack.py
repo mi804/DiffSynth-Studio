@@ -38,11 +38,14 @@ class EntroPackConfig(BackendConfig):
         dtype = getattr(self, "dtype", None)
         compress_method = getattr(self, "compress_method", None)
         if ENTROPACK_AVAILABLE and dtype is not None and compress_method is not None:
-            ep.resolve_compression(
+            # ``resolve_compression`` is a query and checks nothing, so the option check is explicit:
+            # a config naming a value the codec does not take should fail here, not at first use.
+            resolved = ep.resolve_compression(
                 dtype,
                 compress_method=compress_method,
                 **self.compression_options(),
             )
+            resolved.scheme.validate_options(resolved.options)
 
     def compression_options(self):
         return {}
@@ -431,9 +434,10 @@ class EntroPackQuantBackend(QuantBackend):
             compress_method=self.config.compress_method,
             **self.config.compression_options(),
         )
+        # ``ep.compress`` stores the dtype it is handed and has no format to ask for, so the cast to
+        # the configured container dtype is this backend's to make.
         compressed = ep.compress(
-            linear.weight.data,
-            format=resolved.dtype,
+            linear.weight.data.to(resolved.dtype),
             compress_method=resolved.compress_method,
             execution_backend=self.config.execution_backend,
             **resolved.options,
