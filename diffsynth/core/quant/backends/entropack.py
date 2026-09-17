@@ -320,7 +320,7 @@ class EntroPackLinear(torch.nn.Linear):
                         ep.CompressedTensor(
                             header={
                                 "compress_method": self.compress_method,
-                                "resolved_options": {},
+                                "options": {},
                             },
                             buffers=legacy,
                             shape=(self.out_features, self.in_features),

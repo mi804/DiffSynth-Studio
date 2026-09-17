@@ -299,7 +299,7 @@ def test_lossy_reconstruction_uses_shared_linear():
 
     assert type(model[0]) is EntroPackLinear
     compressed = model[0]._compressed()
-    assert set(compressed.header) == {"compress_method", "resolved_options"}
+    assert set(compressed.header) == {"compress_method", "options"}
     assert compressed.lossless is False
     assert model[0].lossless is False
     restored = ep.decompress(compressed, execution_backend="eager")
