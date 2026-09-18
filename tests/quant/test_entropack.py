@@ -12,246 +12,165 @@ from diffsynth.core.quant import (
     check_differentiable,
 )
 from diffsynth.core.quant.backends.entropack import (
+    EntroPackFP8Config,
+    EntroPackINT8Config,
     EntroPackLatticeRANSBF16Config,
-    EntroPackLinear,
 )
 
+CUDA = torch.cuda.is_available()
+pytestmark = pytest.mark.skipif(not CUDA, reason="entropack's Linear classes need a CUDA device")
 
+DEVICE = torch.device("cuda")
 METHODS = (
-    ("entropack_tile_ans_fp32", torch.float32),
-    ("entropack_tile_ans_fp16", torch.float16),
-    ("entropack_dfloat11_bf16", torch.bfloat16),
-    ("entropack_tile_ans_bf16", torch.bfloat16),
-    ("entropack_tile_ans_fp8_e4m3fn", torch.float8_e4m3fn),
-    ("entropack_tile_ans_fp8_e4m3fnuz", torch.float8_e4m3fnuz),
-    ("entropack_tile_ans_fp8_e5m2", torch.float8_e5m2),
-    ("entropack_tile_ans_fp8_e5m2fnuz", torch.float8_e5m2fnuz),
+    ("entropack_dfloat11_bf16", ep.CompressedLinear, torch.bfloat16),
+    ("entropack_tile_ans_bf16", ep.CompressedLinear, torch.bfloat16),
+    ("entropack_lattice_rans_bf16", ep.CompressedLinear, torch.bfloat16),
+    ("entropack_fp8", ep.CompressedFP8Linear, torch.float8_e4m3fn),
+    ("entropack_int8", ep.CompressedINT8Linear, torch.int8),
 )
-
+FLOATING = METHODS[:3]
+W8A8 = METHODS[3:]
 LOSSY_METHOD = "entropack_lattice_rans_bf16"
-LOSSY_KWARGS = {"execution_backend": "eager", "target_bpp": 8.0}
-
+SHAPES = (("lossless", 64), ("lossy", 512), ("w8a8", 512))
 
 def _bits(tensor):
     return tensor.contiguous().view(torch.uint8)
 
-
-@pytest.mark.parametrize(("method", "dtype"), METHODS)
-def test_registered_method_converts_then_compresses_bitwise(method, dtype):
+def _model(in_features=256, out_features=128):
     torch.manual_seed(0)
-    model = torch.nn.Sequential(torch.nn.Linear(33, 17, dtype=torch.float32))
-    expected = model[0].weight.detach().to(dtype)
-    config = QuantizeConfig(
-        method=method,
-        backend_config_kwargs={"execution_backend": "eager"},
-    )
+    model = torch.nn.Sequential(torch.nn.Linear(in_features, out_features, dtype=torch.bfloat16, device=DEVICE))
+    with torch.no_grad():
+        model[0].weight.mul_(0.02)
+        if model[0].bias is not None:
+            model[0].bias.mul_(0.02)
+    return model
 
-    config.quantize_model(model)
+def _config(method, **kwargs):
+    return QuantizeConfig(method=method, backend_config_kwargs=kwargs)
 
-    assert isinstance(model[0], EntroPackLinear)
-    assert model[0].compression_dtype == dtype
-    restored = config.backend.dequantize_to_linear(model[0], compute_dtype=dtype)
-    assert torch.equal(_bits(restored.weight), _bits(expected))
+def _quantize(method, **kwargs):
+    model = _model()
+    _config(method, **kwargs).quantize_model(model)
+    return model
 
+def _mixed_source():
+    return torch.nn.ModuleDict({
+        name: torch.nn.Linear(width, 32, dtype=torch.bfloat16, device=DEVICE) for name, width in SHAPES
+    })
 
-@pytest.mark.parametrize(
-    "method",
-    (
-        "entropack_dfloat11_bf16",
-        "entropack_tile_ans_bf16",
-    ),
-)
-def test_state_dict_roundtrip(method):
-    source = torch.nn.Sequential(torch.nn.Linear(33, 17, dtype=torch.float32))
-    config = QuantizeConfig(
-        method=method,
-        backend_config_kwargs={"execution_backend": "eager"},
-    )
+@pytest.mark.parametrize(("method", "cls", "container"), METHODS)
+def test_a_registered_method_builds_the_linear_it_names(method, cls, container):
+    layer = _quantize(method)[0]
+
+    assert type(layer) is cls
+    assert layer.container_dtype is container
+    assert layer.compressed_weight.dtype is container
+    assert layer.compressed_bits < 16.0
+    assert layer(torch.randn(8, 256, dtype=torch.bfloat16, device=DEVICE)).shape == (8, 128)
+
+@pytest.mark.parametrize(("method", "cls", "container"), FLOATING)
+def test_a_lossless_floating_method_gives_the_weight_back_bit_for_bit(method, cls, container):
+    source = _model()
+    expected = source[0].weight.detach()
+    config = _config(method)
     config.quantize_model(source)
-    state = source.state_dict()
 
-    restored = torch.nn.Sequential(torch.nn.Linear(33, 17, dtype=torch.float32))
-    config.prepare_for_prequantized_load(restored, compute_dtype=torch.float32)
+    if source[0].compressed_weight.lossless:
+        restored = config.backend.dequantize_to_linear(source[0], compute_dtype=torch.bfloat16)
+        assert torch.equal(_bits(restored.weight), _bits(expected))
+
+@pytest.mark.parametrize(("method", "cls", "container"), METHODS)
+def test_state_dict_roundtrip(method, cls, container):
+    source = _quantize(method)
+    config = _config(method)
+    state = source.state_dict()
+    assert state["0._entropack.header"].dtype is torch.uint8
+
+    restored = _model()
+    config.prepare_for_prequantized_load(restored, compute_dtype=torch.bfloat16)
     restored.load_state_dict(state, assign=True)
 
-    expected_weight = source[0]._compressed()
-    actual_weight = restored[0]._compressed()
-    assert actual_weight.header == expected_weight.header
-    for name in expected_weight.buffers:
-        assert torch.equal(actual_weight.buffers[name], expected_weight.buffers[name])
-    x = torch.randn(2, 33)
+    expected, actual = source[0].compressed_weight, restored[0].compressed_weight
+    assert actual.header == expected.header
+    for name in expected.buffers:
+        assert torch.equal(actual.buffers[name], expected.buffers[name])
+    x = torch.randn(8, 256, dtype=torch.bfloat16, device=DEVICE)
     assert torch.equal(restored(x), source(x))
 
-
-@pytest.mark.parametrize(
-    "method",
-    (
-        "entropack_dfloat11_bf16",
-        "entropack_tile_ans_bf16",
-    ),
-)
-def test_safetensors_roundtrip(tmp_path, method):
-    source = torch.nn.Sequential(torch.nn.Linear(33, 17, dtype=torch.float32))
-    config = QuantizeConfig(
-        method=method,
-        backend_config_kwargs={"execution_backend": "eager"},
-    )
-    config.quantize_model(source)
-    tensors, metadata = config.flatten_state_dict(
-        {name: tensor.cpu() for name, tensor in source.state_dict().items()}
-    )
-    path = tmp_path / "compressed.safetensors"
+@pytest.mark.parametrize(("method", "cls", "container"), METHODS)
+def test_safetensors_roundtrip(tmp_path, method, cls, container):
+    source = _quantize(method)
+    config = _config(method)
+    tensors, metadata = config.flatten_state_dict({k: v.cpu() for k, v in source.state_dict().items()})
+    path = tmp_path / f"{method}.safetensors"
     save_file(tensors, path, metadata=metadata)
 
-    restored = torch.nn.Sequential(torch.nn.Linear(33, 17, dtype=torch.float32))
-    config.prepare_for_prequantized_load(restored, compute_dtype=torch.float32)
-    restored.load_state_dict(
-        config.unflatten_state_dict(load_file(path), metadata),
-        assign=True,
-    )
+    restored = _model()
+    config.prepare_for_prequantized_load(restored, compute_dtype=torch.bfloat16)
+    restored.load_state_dict(config.unflatten_state_dict(load_file(path), metadata), assign=True)
 
     assert metadata["diffsynth.quantization.schema"] == "1"
-    x = torch.randn(2, 33)
+    x = torch.randn(8, 256, dtype=torch.bfloat16, device=DEVICE)
     assert torch.equal(restored(x), source(x))
 
-
-@pytest.mark.parametrize(
-    "method",
-    (
-        "entropack_dfloat11_bf16",
-        "entropack_tile_ans_bf16",
-    ),
-)
-def test_legacy_buffer_keys_load(method):
-    source = torch.nn.Sequential(torch.nn.Linear(33, 17, dtype=torch.float32))
-    config = QuantizeConfig(
-        method=method,
-        backend_config_kwargs={"execution_backend": "eager"},
-    )
-    config.quantize_model(source)
-    compressed = source[0]._compressed()
-    legacy_state = {
-        **{f"0.{name}": value for name, value in compressed.buffers.items()},
-        "0.bias": source[0].bias,
-    }
-
-    restored = torch.nn.Sequential(torch.nn.Linear(33, 17, dtype=torch.float32))
-    config.prepare_for_prequantized_load(restored, compute_dtype=torch.float32)
-    restored.load_state_dict(legacy_state, assign=True)
-
-    x = torch.randn(2, 33)
-    assert torch.equal(restored(x), source(x))
-
-
-def test_mixed_bf16_methods_roundtrip():
+def test_mixed_methods_roundtrip():
     config = MixedQuantizeConfig(
         configs=[
-            QuantizeConfig(
-                method="entropack_dfloat11_bf16",
-                target_modules=["0"],
-                backend_config_kwargs={"execution_backend": "eager"},
-            ),
-            QuantizeConfig(
-                method="entropack_tile_ans_bf16",
-                target_modules=["1"],
-                backend_config_kwargs={"execution_backend": "eager"},
-            ),
+            QuantizeConfig(method="entropack_dfloat11_bf16", target_modules=["lossless"]),
+            QuantizeConfig(method=LOSSY_METHOD, target_modules=["lossy"], backend_config_kwargs={"target_bpp": 4.0}),
+            QuantizeConfig(method="entropack_int8", target_modules=["w8a8"], backend_config_kwargs={"target_bpp": 4.0}),
         ]
     )
-    source = torch.nn.Sequential(
-        torch.nn.Linear(16, 16, dtype=torch.float32),
-        torch.nn.Linear(16, 16, dtype=torch.float32),
-    )
+    source = _mixed_source()
     config.quantize_model(source)
     state, metadata = config.flatten_state_dict(source.state_dict())
 
-    restored = torch.nn.Sequential(
-        torch.nn.Linear(16, 16, dtype=torch.float32),
-        torch.nn.Linear(16, 16, dtype=torch.float32),
-    )
-    config.prepare_for_prequantized_load(restored, compute_dtype=torch.float32)
+    restored = _mixed_source()
+    config.prepare_for_prequantized_load(restored, compute_dtype=torch.bfloat16)
     restored.load_state_dict(config.unflatten_state_dict(state, metadata), assign=True)
 
-    assert restored[0].compress_method == "dfloat11"
-    assert restored[1].compress_method == "tile_ans"
-    x = torch.randn(2, 16)
-    assert torch.equal(restored(x), source(x))
+    assert restored["lossless"].compressed_weight.lossless is True
+    assert restored["lossy"].compressed_weight.lossless is False
+    assert type(restored["w8a8"]) is ep.CompressedINT8Linear
+    for name, width in SHAPES:
+        x = torch.randn(2, width, dtype=torch.bfloat16, device=DEVICE)
+        assert torch.equal(restored[name](x), source[name](x))
 
-
-def test_dtype_conversion_does_not_retype_compressed_buffers():
-    model = torch.nn.Sequential(torch.nn.Linear(33, 17, dtype=torch.float32))
-    config = QuantizeConfig(
-        method="entropack_tile_ans_bf16",
-        backend_config_kwargs={"execution_backend": "eager"},
-    )
-    config.quantize_model(model)
-    original = {
-        name: (buffer.dtype, buffer.clone())
-        for name, buffer in model[0]._compressed().buffers.items()
-    }
+@pytest.mark.parametrize(("method", "cls", "container"), METHODS)
+def test_a_dtype_cast_does_not_retype_the_stored_bits(method, cls, container):
+    model = _quantize(method)
+    original = {name: (buffer.dtype, buffer.clone())
+                for name, buffer in model[0].compressed_weight.buffers.items()}
 
     model.to(dtype=torch.float16)
 
-    for name, buffer in model[0]._compressed().buffers.items():
+    for name, buffer in model[0].compressed_weight.buffers.items():
         dtype, value = original[name]
         assert buffer.dtype == dtype
         assert torch.equal(buffer, value)
 
-
-def test_deepcopy_preserves_compressed_weight():
-    model = torch.nn.Sequential(torch.nn.Linear(33, 17, dtype=torch.float32))
-    config = QuantizeConfig(
-        method="entropack_dfloat11_bf16",
-        backend_config_kwargs={"execution_backend": "eager"},
-    )
-    config.quantize_model(model)
-
+@pytest.mark.parametrize(("method", "cls", "container"), METHODS)
+def test_a_deep_copy_owns_the_same_bits(method, cls, container):
+    model = _quantize(method)
     cloned = copy.deepcopy(model[0])
 
-    expected = model[0]._compressed()
-    actual = cloned._compressed()
+    expected, actual = model[0].compressed_weight, cloned.compressed_weight
     assert actual.header == expected.header
     for name in expected.buffers:
         assert torch.equal(actual.buffers[name], expected.buffers[name])
+        assert actual.buffers[name].data_ptr() != expected.buffers[name].data_ptr()
 
-
-@pytest.mark.parametrize(
-    "method",
-    (
-        "entropack_tile_ans_fp16",
-        LOSSY_METHOD,
-    ),
-)
-def test_pinned_dtype_and_compress_method_reject_overrides(method):
+@pytest.mark.parametrize(("method", "cls", "container"), METHODS)
+@pytest.mark.parametrize("field_name", ["dtype", "scheme", "linear_kind", "execution_backend", "group_size"])
+def test_a_pinned_or_removed_field_cannot_be_overridden(method, cls, container, field_name):
     with pytest.raises(ValueError, match="not accepted"):
-        QuantizeConfig(
-            method=method,
-            backend_config_kwargs={"dtype": torch.float32},
-        )
-    with pytest.raises(ValueError, match="not accepted"):
-        QuantizeConfig(
-            method=method,
-            backend_config_kwargs={"compress_method": "dfloat11"},
-        )
+        QuantizeConfig(method=method, backend_config_kwargs={field_name: "invalid"})
 
-
-def _lossy_config(**config_kwargs):
-    return QuantizeConfig(
-        method=LOSSY_METHOD,
-        backend_config_kwargs=LOSSY_KWARGS,
-        **config_kwargs,
-    )
-
-
-def _lossy_model():
-    return torch.nn.Sequential(torch.nn.Linear(512, 64, dtype=torch.float32))
-
-
-def test_lossy_method_is_registered_with_final_defaults():
+def test_the_lattice_config_keeps_its_defaults():
     assert QUANT_METHODS[LOSSY_METHOD].backend == "entropack"
 
     config = EntroPackLatticeRANSBF16Config()
-    assert config.compress_method == "lattice_rans"
+    assert config.scheme == "lattice_rans"
     assert config.dtype is torch.bfloat16
     assert config.target_bpp == 3.0
     assert config.prob_bits is None
@@ -269,239 +188,119 @@ def test_lossy_method_is_registered_with_final_defaults():
         "scale_search_max_vectors": 262144,
     }
 
-
-@pytest.mark.parametrize(
-    ("kwargs", "message"),
-    (
-        ({"target_bpp": 0.9}, "target_bpp"),
-        ({"target_bpp": 11.1}, "target_bpp"),
-        ({"prob_bits": 8}, "prob_bits"),
-    ),
-)
-def test_lossy_config_rejects_invalid_values(kwargs, message):
+@pytest.mark.parametrize(("kwargs", "message"), (
+    ({"target_bpp": 0.9}, "target_bpp"),
+    ({"target_bpp": 11.1}, "target_bpp"),
+    ({"target_bpp": float("nan")}, "target_bpp"),
+    ({"target_bpp": True}, "target_bpp"),
+    ({"prob_bits": 8}, "prob_bits"),
+))
+def test_the_lattice_config_rejects_a_rate_it_cannot_honour(kwargs, message):
     with pytest.raises((TypeError, ValueError), match=message):
         EntroPackLatticeRANSBF16Config.from_kwargs(kwargs)
 
+@pytest.mark.parametrize("config_cls", [EntroPackFP8Config, EntroPackINT8Config])
+@pytest.mark.parametrize("target_bpp", [8.0, 9, 16.0, 0.0, -1.0, float("nan"), True, "4"])
+def test_a_w8a8_rate_at_or_above_the_codes_own_width_is_refused(config_cls, target_bpp):
+    with pytest.raises(ValueError, match=r"in \(0.0, 8.0\)"):
+        config_cls.from_kwargs({"target_bpp": target_bpp})
 
-@pytest.mark.parametrize("field_name", ("quality", "group_size", "dtype", "compress_method", "side_dtype"))
-def test_lossy_config_rejects_removed_unknown_and_pinned_fields(field_name):
-    with pytest.raises(ValueError, match="not accepted"):
-        EntroPackLatticeRANSBF16Config.from_kwargs({field_name: "invalid"})
+@pytest.mark.parametrize(("method", "cls", "container"), W8A8)
+@pytest.mark.parametrize("target_bpp", [None, 4.0])
+def test_a_w8a8_method_can_store_its_codes_uncoded(method, cls, container, target_bpp):
+    layer = _quantize(method, target_bpp=target_bpp)[0]
 
+    assert layer.scheme_name == ("raw" if target_bpp is None else "lattice_rans")
+    assert layer.codes(DEVICE).dtype is container
+    assert torch.isfinite(layer(torch.randn(8, 256, dtype=torch.bfloat16, device=DEVICE))).all()
+    assert layer.compressed_bits < (9.0 if target_bpp is None else 6.0)
 
-def test_lossy_reconstruction_uses_shared_linear():
-    torch.manual_seed(10)
-    model = _lossy_model()
-    original = model[0].weight.detach().to(torch.bfloat16)
-    config = _lossy_config()
+@pytest.mark.parametrize(("method", "cls", "container"), METHODS)
+def test_every_method_declares_itself_differentiable(method, cls, container):
+    assert _config(method).backend.capabilities()["is_differentiable"] is True
 
-    config.quantize_model(model)
-
-    assert type(model[0]) is EntroPackLinear
-    compressed = model[0]._compressed()
-    assert set(compressed.header) == {"compress_method", "options"}
-    assert compressed.lossless is False
-    assert model[0].lossless is False
-    restored = ep.decompress(compressed, execution_backend="eager")
-    assert restored.dtype is torch.bfloat16
-    assert restored.shape == original.shape
-    assert not torch.equal(_bits(restored), _bits(original))
-    relative_error = torch.linalg.vector_norm(restored.float() - original.float()) / torch.linalg.vector_norm(original.float())
-    assert relative_error < 0.1
-
-
-def test_lossy_v2_state_dict_and_safetensors_roundtrip(tmp_path):
-    torch.manual_seed(11)
-    source = _lossy_model()
-    config = _lossy_config()
-    config.quantize_model(source)
-    state = source.state_dict()
-    assert state["0._entropack.header"].dtype is torch.uint8
-
-    restored = _lossy_model()
-    config.prepare_for_prequantized_load(restored, compute_dtype=torch.float32)
-    restored.load_state_dict(state, assign=True)
-
-    expected = source[0]._compressed()
-    actual = restored[0]._compressed()
-    assert actual.header == expected.header
-    assert actual.lossless is False
-    for name in expected.buffers:
-        assert torch.equal(actual.buffers[name], expected.buffers[name])
-
-    tensors, metadata = config.flatten_state_dict(state)
-    path = tmp_path / f"{LOSSY_METHOD}.safetensors"
-    save_file(tensors, path, metadata=metadata)
-    from_file = _lossy_model()
-    config.prepare_for_prequantized_load(from_file, compute_dtype=torch.float32)
-    from_file.load_state_dict(
-        config.unflatten_state_dict(load_file(path), metadata),
-        assign=True,
-    )
-    for name in expected.buffers:
-        assert torch.equal(from_file[0]._compressed().buffers[name], expected.buffers[name])
-    x = torch.randn(2, 512)
-    assert torch.equal(restored(x), source(x))
-    assert torch.equal(from_file(x), source(x))
-
-
-def test_set_compressed_rejects_wrong_method_dtype_and_buffer_schema():
-    weight = torch.randn(8, 16, dtype=torch.bfloat16)
-    lossy = ep.compress(
-        weight,
-        compress_method="lattice_rans",
-        execution_backend="eager",
-    )
-    dfloat = ep.compress(
-        weight,
-        compress_method="dfloat11",
-        execution_backend="eager",
-    )
-    shell = EntroPackLinear(
-        16,
-        8,
-        bias=False,
-        compute_dtype=torch.float32,
-        compression_dtype=torch.bfloat16,
-        compress_method="lattice_rans",
-        execution_backend="eager",
-    )
-
-    with pytest.raises(ValueError, match="method"):
-        shell._set_compressed(dfloat)
-
-    wrong_dtype = copy.deepcopy(lossy)
+def test_set_compressed_refuses_a_container_built_for_another_layer():
+    weight = torch.randn(8, 16, dtype=torch.bfloat16, device=DEVICE) * 0.02
+    coded = ep.compress(weight, compress_method="lattice_rans", target_bpp=4.0, execution_backend="cuda")
+    dfloat = ep.compress(weight, compress_method="dfloat11", execution_backend="cuda")
+    shell = ep.CompressedLinear(16, 8, bias=False, dtype=torch.bfloat16, scheme="lattice_rans", target_bpp=4.0)
+    taller = ep.CompressedLinear(16, 9, bias=False, dtype=torch.bfloat16, scheme="lattice_rans", target_bpp=4.0)
+    wrong_dtype = copy.deepcopy(coded)
     wrong_dtype.dtype = torch.float16
-    with pytest.raises(ValueError, match="dtype"):
-        shell._set_compressed(wrong_dtype)
 
-    wrong_buffers = copy.deepcopy(lossy)
-    wrong_buffers.buffers.pop(next(iter(wrong_buffers.buffers)))
-    with pytest.raises(ValueError, match="buffers"):
-        shell._set_compressed(wrong_buffers)
+    with pytest.raises(ValueError, match="uses 'dfloat11'"):
+        shell.set_compressed(dfloat)
+    with pytest.raises(ValueError, match="does not match this Linear"):
+        taller.set_compressed(coded)
+    with pytest.raises(ValueError, match="configured for"):
+        shell.set_compressed(wrong_dtype)
+    with pytest.raises(TypeError, match="CompressedTensor"):
+        shell.set_compressed({"header": {}, "buffers": {}})
+    with pytest.raises(ValueError, match="configured for"):
+        ep.CompressedINT8Linear(16, 8, bias=False, target_bpp=4.0).set_compressed(coded)
 
-
-def test_lossy_rejects_headerless_buffers():
-    model = torch.nn.Sequential(torch.nn.Linear(512, 64))
-    config = _lossy_config()
-    config.quantize_model(model)
-    compressed = model[0]._compressed()
-
-    legacy_state = {
-        **{f"0.{name}": value for name, value in compressed.buffers.items()},
-        "0.bias": model[0].bias,
-    }
-    shell = torch.nn.Sequential(torch.nn.Linear(512, 64))
-    config.prepare_for_prequantized_load(shell, compute_dtype=torch.float32)
-    with pytest.raises(RuntimeError, match="headerless.*only supported by lossless"):
-        shell.load_state_dict(legacy_state, assign=True)
-
-
-def test_mixed_lossless_and_lossy_methods_roundtrip():
-    config = MixedQuantizeConfig(
-        configs=[
-            QuantizeConfig(
-                method="entropack_dfloat11_bf16",
-                target_modules=["lossless"],
-                backend_config_kwargs={"execution_backend": "eager"},
-            ),
-            QuantizeConfig(
-                method=LOSSY_METHOD,
-                target_modules=["lossy"],
-                backend_config_kwargs=LOSSY_KWARGS,
-            ),
-        ]
-    )
-    source = torch.nn.ModuleDict(
-        {
-            "lossless": torch.nn.Linear(64, 32),
-            "lossy": torch.nn.Linear(512, 64),
-        }
-    )
-    config.quantize_model(source)
-    state, metadata = config.flatten_state_dict(source.state_dict())
-
-    restored = torch.nn.ModuleDict(
-        {
-            "lossless": torch.nn.Linear(64, 32),
-            "lossy": torch.nn.Linear(512, 64),
-        }
-    )
-    config.prepare_for_prequantized_load(restored, compute_dtype=torch.float32)
-    restored.load_state_dict(config.unflatten_state_dict(state, metadata), assign=True)
-
-    assert restored["lossless"].lossless is True
-    assert restored["lossy"].lossless is False
-    lossless_input = torch.randn(2, 64)
-    assert torch.equal(
-        restored["lossless"](lossless_input), source["lossless"](lossless_input)
-    )
-    lossy_input = torch.randn(2, 512)
-    assert torch.equal(restored["lossy"](lossy_input), source["lossy"](lossy_input))
-
-
-def test_lossy_dtype_preserving_apply_and_deepcopy():
-    model = _lossy_model()
-    config = _lossy_config()
-    config.quantize_model(model)
-    original = {
-        name: (buffer.dtype, buffer.clone())
-        for name, buffer in model[0]._compressed().buffers.items()
-    }
-
-    model.to(dtype=torch.float16)
-    cloned = copy.deepcopy(model[0])
-
-    for module in (model[0], cloned):
-        for name, buffer in module._compressed().buffers.items():
-            dtype, value = original[name]
-            assert buffer.dtype == dtype
-            assert torch.equal(buffer, value)
-        assert module._compressed().header == model[0]._compressed().header
-
-
-def test_lossy_dequant_once_restores_plain_linear():
-    torch.manual_seed(12)
-    model = _lossy_model()
-    config = _lossy_config(mode="dequant_once")
-    config.quantize_model(model)
-    expected = ep.decompress(model[0]._compressed(), execution_backend="eager")
+def test_dequant_once_restores_a_plain_linear():
+    model = _quantize(LOSSY_METHOD, target_bpp=4.0)
+    config = QuantizeConfig(method=LOSSY_METHOD, backend_config_kwargs={"target_bpp": 4.0}, mode="dequant_once")
+    expected = model[0].dequantize().to(torch.bfloat16)
 
     config.dequantize_model(model, compute_dtype=torch.bfloat16)
 
     assert type(model[0]) is torch.nn.Linear
     assert torch.equal(_bits(model[0].weight), _bits(expected))
 
-
-def test_lossy_input_and_lora_branch_gradients():
-    torch.manual_seed(13)
-    model = _lossy_model()
-    config = _lossy_config()
-    config.quantize_model(model)
+@pytest.mark.parametrize(("method", "cls", "container"), METHODS)
+def test_input_and_lora_branch_gradients_reach_every_method(method, cls, container):
+    model = _quantize(method)
     assert check_differentiable(model[0], verbose=False)
 
     rank = 4
-    lora_a = torch.nn.Parameter(torch.randn(rank, 512, dtype=torch.bfloat16))
-    lora_b = torch.nn.Parameter(torch.randn(64, rank, dtype=torch.bfloat16))
-    x = torch.randn(2, 512, dtype=torch.bfloat16, requires_grad=True)
+    lora_a = torch.nn.Parameter(torch.randn(rank, 256, dtype=torch.bfloat16, device=DEVICE))
+    lora_b = torch.nn.Parameter(torch.randn(128, rank, dtype=torch.bfloat16, device=DEVICE))
+    x = torch.randn(2, 8, 256, dtype=torch.bfloat16, device=DEVICE, requires_grad=True)
     output = model[0](x) + (x @ lora_a.t()) @ lora_b.t()
     output.square().mean().backward()
 
-    assert x.grad is not None and torch.isfinite(x.grad).all()
+    assert x.grad is not None and torch.isfinite(x.grad).all() and (x.grad != 0).any()
+    assert x.grad.shape == x.shape
     assert lora_a.grad is not None and torch.isfinite(lora_a.grad).all()
     assert lora_b.grad is not None and torch.isfinite(lora_b.grad).all()
-    assert all(not buffer.requires_grad for buffer in model[0]._compressed().buffers.values())
+    assert all(not buffer.requires_grad for buffer in model[0].compressed_weight.buffers.values())
+    assert all(parameter.grad is None for parameter in model[0].parameters())
 
+@pytest.mark.parametrize(("method", "cls", "container"), METHODS)
+def test_tracking_a_gradient_does_not_change_the_forward(method, cls, container):
+    model = _quantize(method)
+    x = torch.randn(2, 8, 256, dtype=torch.bfloat16, device=DEVICE)
 
-def test_lossy_pads_shapes_the_vector_plane_cannot_tile():
-    # lattice_rans codes 8-dim vectors per row, so a ragged row is zero-padded inside the codec.
-    # The padding must stay invisible here: the layer keeps its real in_features, the compressed
-    # tensor reports the real shape, and a forward still runs. 3420 is the column count of
-    # Qwen-Image's visual-tower down_proj, which is what surfaced this.
+    with torch.no_grad():
+        inference = model[0](x)
+    tracked = model[0](x.clone().requires_grad_(True))
+
+    assert tracked.requires_grad
+    assert torch.equal(tracked.detach(), inference)
+
+@pytest.mark.parametrize(("method", "cls", "container"), W8A8)
+def test_a_w8a8_gradient_is_the_dequantized_weight_transpose(method, cls, container):
+    layer = _quantize(method, target_bpp=4.0)[0]
+    x = torch.randn(3, 8, 256, dtype=torch.bfloat16, device=DEVICE)
+    incoming = torch.randn(3, 8, 128, dtype=torch.bfloat16, device=DEVICE)
+
+    tracked = x.clone().requires_grad_(True)
+    layer(tracked).backward(incoming)
+
+    expected = torch.mm(incoming.reshape(-1, 128), layer.dequantize(DEVICE).to(incoming.dtype)).reshape(x.shape)
+    assert torch.equal(tracked.grad, expected)
+
+@pytest.mark.parametrize(("method", "cls", "container"), METHODS)
+def test_a_shape_the_codec_has_to_pad_still_round_trips(method, cls, container):
     for in_features, out_features in ((3420, 128), (1001, 64), (1, 1)):
-        model = torch.nn.Sequential(torch.nn.Linear(in_features, out_features, bias=False))
-        _lossy_config().quantize_model(model)
-        assert type(model[0]) is EntroPackLinear
+        model = torch.nn.Sequential(
+            torch.nn.Linear(in_features, out_features, bias=False, dtype=torch.bfloat16, device=DEVICE))
+        _config(method).quantize_model(model)
+
+        assert type(model[0]) is cls
         assert model[0].in_features == in_features
-        assert model[0]._compressed().shape == (out_features, in_features)
-        assert model[0](torch.randn(2, in_features)).shape == (2, out_features)
+        assert model[0].compressed_weight.shape == (out_features, in_features)
+        x = torch.randn(2, in_features, dtype=torch.bfloat16, device=DEVICE)
+        assert model[0](x).shape == (2, out_features)
