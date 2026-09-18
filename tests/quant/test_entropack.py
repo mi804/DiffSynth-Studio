@@ -12,9 +12,9 @@ from diffsynth.core.quant import (
     check_differentiable,
 )
 from diffsynth.core.quant.backends.entropack import (
-    EntroPackFP8Config,
-    EntroPackINT8Config,
-    EntroPackLatticeRANSBF16Config,
+    EntroPackLossyQuantConfig,
+    EntroPackLossyQuantFP8Config,
+    EntroPackLossyQuantINT8Config,
 )
 
 CUDA = torch.cuda.is_available()
@@ -22,15 +22,14 @@ pytestmark = pytest.mark.skipif(not CUDA, reason="entropack's Linear classes nee
 
 DEVICE = torch.device("cuda")
 METHODS = (
-    ("entropack_dfloat11_bf16", ep.CompressedLinear, torch.bfloat16),
-    ("entropack_tile_ans_bf16", ep.CompressedLinear, torch.bfloat16),
-    ("entropack_lattice_rans_bf16", ep.CompressedLinear, torch.bfloat16),
-    ("entropack_fp8", ep.CompressedFP8Linear, torch.float8_e4m3fn),
-    ("entropack_int8", ep.CompressedINT8Linear, torch.int8),
+    ("entropack_lossless_compression", ep.CompressedLinear, torch.bfloat16),
+    ("entropack_lossy_quant", ep.CompressedLinear, torch.bfloat16),
+    ("entropack_lossy_quant_fp8", ep.CompressedFP8Linear, torch.float8_e4m3fn),
+    ("entropack_lossy_quant_int8", ep.CompressedINT8Linear, torch.int8),
 )
-FLOATING = METHODS[:3]
-W8A8 = METHODS[3:]
-LOSSY_METHOD = "entropack_lattice_rans_bf16"
+W8A8 = METHODS[2:]
+LOSSLESS = METHODS[:1]
+LOSSY_METHOD = "entropack_lossy_quant"
 SHAPES = (("lossless", 64), ("lossy", 512), ("w8a8", 512))
 
 def _bits(tensor):
@@ -68,16 +67,15 @@ def test_a_registered_method_builds_the_linear_it_names(method, cls, container):
     assert layer.compressed_bits < 16.0
     assert layer(torch.randn(8, 256, dtype=torch.bfloat16, device=DEVICE)).shape == (8, 128)
 
-@pytest.mark.parametrize(("method", "cls", "container"), FLOATING)
+@pytest.mark.parametrize(("method", "cls", "container"), LOSSLESS)
 def test_a_lossless_floating_method_gives_the_weight_back_bit_for_bit(method, cls, container):
     source = _model()
     expected = source[0].weight.detach()
     config = _config(method)
     config.quantize_model(source)
 
-    if source[0].compressed_weight.lossless:
-        restored = config.backend.dequantize_to_linear(source[0], compute_dtype=torch.bfloat16)
-        assert torch.equal(_bits(restored.weight), _bits(expected))
+    restored = config.backend.dequantize_to_linear(source[0], compute_dtype=torch.bfloat16)
+    assert torch.equal(_bits(restored.weight), _bits(expected))
 
 @pytest.mark.parametrize(("method", "cls", "container"), METHODS)
 def test_state_dict_roundtrip(method, cls, container):
@@ -116,9 +114,10 @@ def test_safetensors_roundtrip(tmp_path, method, cls, container):
 def test_mixed_methods_roundtrip():
     config = MixedQuantizeConfig(
         configs=[
-            QuantizeConfig(method="entropack_dfloat11_bf16", target_modules=["lossless"]),
-            QuantizeConfig(method=LOSSY_METHOD, target_modules=["lossy"], backend_config_kwargs={"target_bpp": 4.0}),
-            QuantizeConfig(method="entropack_int8", target_modules=["w8a8"], backend_config_kwargs={"target_bpp": 4.0}),
+            QuantizeConfig(method="entropack_lossless_compression", target_modules=["lossless"]),
+            QuantizeConfig(method=LOSSY_METHOD, target_modules=["lossy"], backend_config_kwargs={"target_bit_per_param": 4.0}),
+            QuantizeConfig(method="entropack_lossy_quant_int8", target_modules=["w8a8"],
+                           backend_config_kwargs={"target_bit_per_param": 4.0}),
         ]
     )
     source = _mixed_source()
@@ -160,60 +159,56 @@ def test_a_deep_copy_owns_the_same_bits(method, cls, container):
         assert torch.equal(actual.buffers[name], expected.buffers[name])
         assert actual.buffers[name].data_ptr() != expected.buffers[name].data_ptr()
 
-@pytest.mark.parametrize(("method", "cls", "container"), METHODS)
-@pytest.mark.parametrize("field_name", ["dtype", "scheme", "linear_kind", "execution_backend", "group_size"])
-def test_a_pinned_or_removed_field_cannot_be_overridden(method, cls, container, field_name):
-    with pytest.raises(ValueError, match="not accepted"):
-        QuantizeConfig(method=method, backend_config_kwargs={field_name: "invalid"})
+def test_a_pinned_or_removed_field_cannot_be_overridden():
+    pinned = {
+        "entropack_lossless_compression": ("dtype", "linear_kind", "target_bit_per_param", "execution_backend", "group_size"),
+        "entropack_lossy_quant": ("dtype", "linear_kind", "scheme", "execution_backend", "group_size"),
+        "entropack_lossy_quant_fp8": ("dtype", "linear_kind", "scheme", "execution_backend", "group_size"),
+        "entropack_lossy_quant_int8": ("dtype", "linear_kind", "scheme", "execution_backend", "group_size"),
+    }
+    for method, field_names in pinned.items():
+        for field_name in field_names:
+            with pytest.raises(ValueError, match="not accepted"):
+                QuantizeConfig(method=method, backend_config_kwargs={field_name: "invalid"})
 
-def test_the_lattice_config_keeps_its_defaults():
+def test_the_lossy_config_defaults_to_four_bits_and_passes_its_options_through():
     assert QUANT_METHODS[LOSSY_METHOD].backend == "entropack"
 
-    config = EntroPackLatticeRANSBF16Config()
+    config = EntroPackLossyQuantConfig()
     assert config.scheme == "lattice_rans"
-    assert config.dtype is torch.bfloat16
-    assert config.target_bpp == 3.0
-    assert config.prob_bits is None
-    assert config.tile_elements is None
-    assert config.row_rdo_iterations == 0
-    assert config.row_rdo_candidates == 5
-    assert config.scale_search_iterations == 12
-    assert config.scale_search_max_vectors == 262144
-    assert config.compression_options() == {
-        "target_bpp": 3.0,
-        "prob_bits": None,
-        "row_rdo_iterations": 0,
-        "row_rdo_candidates": 5,
-        "scale_search_iterations": 12,
-        "scale_search_max_vectors": 262144,
-    }
+    assert config.target_bit_per_param == 4.0
+    assert config.options == {}
+    assert config.linear_kwargs() == {"scheme": "lattice_rans", "target_bpp": 4.0}
+
+    config = EntroPackLossyQuantConfig.from_kwargs({"target_bit_per_param": 3.0, "options": {"prob_bits": 12}})
+    assert config.linear_kwargs() == {"scheme": "lattice_rans", "target_bpp": 3.0, "prob_bits": 12}
 
 @pytest.mark.parametrize(("kwargs", "message"), (
-    ({"target_bpp": 0.9}, "target_bpp"),
-    ({"target_bpp": 11.1}, "target_bpp"),
-    ({"target_bpp": float("nan")}, "target_bpp"),
-    ({"target_bpp": True}, "target_bpp"),
-    ({"prob_bits": 8}, "prob_bits"),
+    ({"target_bit_per_param": 0.9}, "target_bpp"),
+    ({"target_bit_per_param": 11.1}, "target_bpp"),
+    ({"target_bit_per_param": float("nan")}, "target_bpp"),
+    ({"target_bit_per_param": True}, "target_bpp"),
+    ({"options": {"prob_bits": 8}}, "prob_bits"),
 ))
-def test_the_lattice_config_rejects_a_rate_it_cannot_honour(kwargs, message):
+def test_the_lossy_config_rejects_a_rate_it_cannot_honour(kwargs, message):
     with pytest.raises((TypeError, ValueError), match=message):
-        EntroPackLatticeRANSBF16Config.from_kwargs(kwargs)
-
-@pytest.mark.parametrize("config_cls", [EntroPackFP8Config, EntroPackINT8Config])
-@pytest.mark.parametrize("target_bpp", [8.0, 9, 16.0, 0.0, -1.0, float("nan"), True, "4"])
-def test_a_w8a8_rate_at_or_above_the_codes_own_width_is_refused(config_cls, target_bpp):
-    with pytest.raises(ValueError, match=r"in \(0.0, 8.0\)"):
-        config_cls.from_kwargs({"target_bpp": target_bpp})
+        EntroPackLossyQuantConfig.from_kwargs(kwargs)
 
 @pytest.mark.parametrize(("method", "cls", "container"), W8A8)
-@pytest.mark.parametrize("target_bpp", [None, 4.0])
-def test_a_w8a8_method_can_store_its_codes_uncoded(method, cls, container, target_bpp):
-    layer = _quantize(method, target_bpp=target_bpp)[0]
+@pytest.mark.parametrize("target_bit_per_param", [8.0, 9, 16.0, 0.0, -1.0, float("nan"), True, "4"])
+def test_a_w8a8_rate_at_or_above_the_codes_own_width_is_refused(method, cls, container, target_bit_per_param):
+    with pytest.raises(ValueError, match="only pays below 8"):
+        _quantize(method, target_bit_per_param=target_bit_per_param)
 
-    assert layer.scheme_name == ("raw" if target_bpp is None else "lattice_rans")
+@pytest.mark.parametrize(("method", "cls", "container"), W8A8)
+@pytest.mark.parametrize("target_bit_per_param", [None, 4.0])
+def test_a_w8a8_method_can_store_its_codes_uncoded(method, cls, container, target_bit_per_param):
+    layer = _quantize(method, target_bit_per_param=target_bit_per_param)[0]
+
+    assert layer.scheme_name == ("raw" if target_bit_per_param is None else "lattice_rans")
     assert layer.codes(DEVICE).dtype is container
     assert torch.isfinite(layer(torch.randn(8, 256, dtype=torch.bfloat16, device=DEVICE))).all()
-    assert layer.compressed_bits < (9.0 if target_bpp is None else 6.0)
+    assert layer.compressed_bits < (9.0 if target_bit_per_param is None else 6.0)
 
 @pytest.mark.parametrize(("method", "cls", "container"), METHODS)
 def test_every_method_declares_itself_differentiable(method, cls, container):
@@ -240,8 +235,8 @@ def test_set_compressed_refuses_a_container_built_for_another_layer():
         ep.CompressedINT8Linear(16, 8, bias=False, target_bpp=4.0).set_compressed(coded)
 
 def test_dequant_once_restores_a_plain_linear():
-    model = _quantize(LOSSY_METHOD, target_bpp=4.0)
-    config = QuantizeConfig(method=LOSSY_METHOD, backend_config_kwargs={"target_bpp": 4.0}, mode="dequant_once")
+    model = _quantize(LOSSY_METHOD, target_bit_per_param=4.0)
+    config = QuantizeConfig(method=LOSSY_METHOD, backend_config_kwargs={"target_bit_per_param": 4.0}, mode="dequant_once")
     expected = model[0].dequantize().to(torch.bfloat16)
 
     config.dequantize_model(model, compute_dtype=torch.bfloat16)
@@ -282,7 +277,7 @@ def test_tracking_a_gradient_does_not_change_the_forward(method, cls, container)
 
 @pytest.mark.parametrize(("method", "cls", "container"), W8A8)
 def test_a_w8a8_gradient_is_the_dequantized_weight_transpose(method, cls, container):
-    layer = _quantize(method, target_bpp=4.0)[0]
+    layer = _quantize(method, target_bit_per_param=4.0)[0]
     x = torch.randn(3, 8, 256, dtype=torch.bfloat16, device=DEVICE)
     incoming = torch.randn(3, 8, 128, dtype=torch.bfloat16, device=DEVICE)
 

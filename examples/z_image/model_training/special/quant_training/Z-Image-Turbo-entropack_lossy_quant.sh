@@ -6,7 +6,7 @@ accelerate launch examples/z_image/model_training/train.py \
   --max_pixels 1048576 \
   --dataset_repeat 50 \
   --model_id_with_origin_paths "Tongyi-MAI/Z-Image-Turbo:transformer/*.safetensors,Tongyi-MAI/Z-Image-Turbo:text_encoder/*.safetensors,Tongyi-MAI/Z-Image-Turbo:vae/diffusion_pytorch_model.safetensors" \
-  --quant_options "Tongyi-MAI/Z-Image-Turbo:transformer/*.safetensors:entropack_lattice_rans_bf16;Tongyi-MAI/Z-Image-Turbo:text_encoder/*.safetensors:entropack_lattice_rans_bf16" \
+  --quant_options "Tongyi-MAI/Z-Image-Turbo:transformer/*.safetensors:entropack_lossy_quant;Tongyi-MAI/Z-Image-Turbo:text_encoder/*.safetensors:entropack_lossy_quant" \
   --learning_rate 1e-4 \
   --num_epochs 5 \
   --remove_prefix_in_ckpt "pipe.dit." \
