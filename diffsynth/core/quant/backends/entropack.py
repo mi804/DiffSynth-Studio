@@ -1,5 +1,5 @@
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import torch
 
@@ -10,10 +10,8 @@ try:
     import entropack as ep
 
     _REQUIRED_ENTROPACK_API = (
-        ep.CompressedLinear,
-        ep.CompressedFP8Linear,
-        ep.CompressedINT8Linear,
-        ep.resolve_compression,
+        ep.CompressedLinear, ep.CompressedFP8Linear, ep.CompressedINT8Linear,
+        ep.DFloat11Config, ep.TileANSConfig, ep.LatticeRANSConfig, ep.RawConfig,
     )
     ENTROPACK_AVAILABLE = True
     _ENTROPACK_IMPORT_ERROR = None
@@ -22,64 +20,42 @@ except (ImportError, AttributeError) as error:
     ENTROPACK_AVAILABLE = False
     _ENTROPACK_IMPORT_ERROR = error
 
-@dataclass
-class EntroPackConfig(BackendConfig):
 
-    linear_kind: str = field(init=False, default="bf16")
-    scheme: str = field(init=False, default="auto")
-    target_bit_per_param: float | None = field(init=False, default=None)
-    options: dict = field(init=False, default_factory=dict)
+if ENTROPACK_AVAILABLE:
 
-    def __post_init__(self):
-        if not ENTROPACK_AVAILABLE or self.scheme == "auto":
-            return
-        ep.get_scheme(self.scheme).validate_options(self.linear_options())
+    @dataclass
+    class EntroPackDFloat11Config(BackendConfig, ep.DFloat11Config):
+        linear_cls = ep.CompressedLinear
 
-    @property
-    def linear_cls(self):
-        return {
-            "bf16": ep.CompressedLinear,
-            "fp8": ep.CompressedFP8Linear,
-            "int8": ep.CompressedINT8Linear,
-        }[self.linear_kind]
+    @dataclass
+    class EntroPackTileANSConfig(BackendConfig, ep.TileANSConfig):
+        linear_cls = ep.CompressedLinear
 
-    def linear_options(self) -> dict:
-        options = dict(self.options)
-        if self.target_bit_per_param is not None:
-            options["target_bpp"] = self.target_bit_per_param
-        return options
+    @dataclass
+    class EntroPackLossyQuantConfig(BackendConfig, ep.LatticeRANSConfig):
+        linear_cls = ep.CompressedLinear
 
-    def linear_kwargs(self) -> dict:
-        kwargs = self.linear_options()
-        if self.scheme != "auto":
-            kwargs["scheme"] = self.scheme
-        return kwargs
+    @dataclass
+    class EntroPackFP8CodedConfig(BackendConfig, ep.LatticeRANSConfig):
+        linear_cls = ep.CompressedFP8Linear
 
-@dataclass
-class EntroPackLosslessConfig(EntroPackConfig):
-    scheme: str = "auto"
-    options: dict = field(default_factory=dict)
+    @dataclass
+    class EntroPackFP8RawConfig(BackendConfig, ep.RawConfig):
+        linear_cls = ep.CompressedFP8Linear
 
-@dataclass
-class EntroPackLossyQuantConfig(EntroPackConfig):
-    scheme: str = field(init=False, default="lattice_rans")
-    target_bit_per_param: float | None = 4.0
-    options: dict = field(default_factory=dict)
+    @dataclass
+    class EntroPackINT8CodedConfig(BackendConfig, ep.LatticeRANSConfig):
+        linear_cls = ep.CompressedINT8Linear
 
-@dataclass
-class EntroPackLossyQuantFP8Config(EntroPackConfig):
-    linear_kind: str = field(init=False, default="fp8")
-    target_bit_per_param: float | None = 4.0
-    options: dict = field(default_factory=dict)
+    @dataclass
+    class EntroPackINT8RawConfig(BackendConfig, ep.RawConfig):
+        linear_cls = ep.CompressedINT8Linear
 
-@dataclass
-class EntroPackLossyQuantINT8Config(EntroPackConfig):
-    linear_kind: str = field(init=False, default="int8")
-    target_bit_per_param: float | None = 4.0
-    options: dict = field(default_factory=dict)
 
 @register_quant_backend("entropack")
 class EntroPackQuantBackend(QuantBackend):
+    """Adapter over entropack's `CompressedLinear` family; a method's config is the config its layers get."""
+
     def validate_environment(self):
         if not ENTROPACK_AVAILABLE:
             raise ImportError(
@@ -112,13 +88,13 @@ class EntroPackQuantBackend(QuantBackend):
         linear.requires_grad_(False)
         if compute_device is not None:
             linear = linear.to(device=compute_device)
-        quantized = self.config.linear_cls.from_linear(linear, **self.config.linear_kwargs())
+        quantized = self.config.linear_cls.from_linear(linear, config=self.config)
         return quantized if model_device is None else quantized.to(device=model_device)
 
     def create_quantized_linear_shell(self, linear, compute_dtype):
         return self.config.linear_cls(
             linear.in_features, linear.out_features, bias=linear.bias is not None,
-            dtype=compute_dtype, **self.config.linear_kwargs(),
+            dtype=compute_dtype, config=self.config,
         )
 
     def dequantize_to_linear(self, module, compute_dtype, compute_device=None, model_device=None):
@@ -133,7 +109,39 @@ class EntroPackQuantBackend(QuantBackend):
             )
         return linear if model_device is None else linear.to(device=model_device)
 
-register_quant_method("entropack_lossless_compression", "entropack", EntroPackLosslessConfig.from_kwargs, label="lossless")
-register_quant_method("entropack_lossy_quant", "entropack", EntroPackLossyQuantConfig.from_kwargs, label="lossy, lattice rate")
-register_quant_method("entropack_lossy_quant_fp8", "entropack", EntroPackLossyQuantFP8Config.from_kwargs, label="W8A8, fp8")
-register_quant_method("entropack_lossy_quant_int8", "entropack", EntroPackLossyQuantINT8Config.from_kwargs, label="W8A8, int8")
+
+def _df11_config(kwargs):
+    return EntroPackDFloat11Config.from_kwargs(kwargs)
+
+
+def _tile_ans_config(kwargs):
+    return EntroPackTileANSConfig.from_kwargs(kwargs)
+
+
+def _lossy_config(kwargs):
+    return EntroPackLossyQuantConfig.from_kwargs(kwargs)
+
+
+def _fp8_coded_config(kwargs):
+    return EntroPackFP8CodedConfig.from_kwargs(kwargs)
+
+
+def _fp8_raw_config(kwargs):
+    return EntroPackFP8RawConfig.from_kwargs(kwargs)
+
+
+def _int8_coded_config(kwargs):
+    return EntroPackINT8CodedConfig.from_kwargs(kwargs)
+
+
+def _int8_raw_config(kwargs):
+    return EntroPackINT8RawConfig.from_kwargs(kwargs)
+
+
+register_quant_method("entropack_lossless_df11", "entropack", _df11_config, label="lossless, dfloat11")
+register_quant_method("entropack_lossless_tile_ans", "entropack", _tile_ans_config, label="lossless, tile_ans")
+register_quant_method("entropack_lossy_quant", "entropack", _lossy_config, label="lossy, lattice rate")
+register_quant_method("entropack_lossy_quant_fp8", "entropack", _fp8_coded_config, label="W8A8, fp8, lattice-coded")
+register_quant_method("entropack_lossy_quant_fp8_raw", "entropack", _fp8_raw_config, label="W8A8, fp8, codes verbatim")
+register_quant_method("entropack_lossy_quant_int8", "entropack", _int8_coded_config, label="W8A8, int8, lattice-coded")
+register_quant_method("entropack_lossy_quant_int8_raw", "entropack", _int8_raw_config, label="W8A8, int8, codes verbatim")
