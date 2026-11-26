@@ -210,6 +210,7 @@ def init_weights(m):
 
 
 class WanTextEncoder(torch.nn.Module):
+    _repeated_blocks = ["T5SelfAttention"]
 
     def __init__(self,
                  vocab=256384,

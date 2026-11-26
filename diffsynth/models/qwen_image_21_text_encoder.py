@@ -5,6 +5,8 @@ from transformers import Qwen3VLConfig, Qwen3VLForConditionalGeneration
 
 
 class QwenImage21TextEncoder(torch.nn.Module):
+    _repeated_blocks = ["Qwen3VLTextDecoderLayer", "Qwen3VLVisionBlock"]
+
     QWEN_IMAGE_21_TEXT_ENCODER_CONFIG = {
         "text_config": {
             "attention_bias": False,

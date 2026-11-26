@@ -103,6 +103,8 @@ class MiniMaxMusic3TransformerBlock(nn.Module):
 
 
 class MiniMaxMusic3DiT(nn.Module):
+    _repeated_blocks = ["MiniMaxMusic3TransformerBlock"]
+
     def __init__(
         self,
         in_channels: int = 128,

@@ -4,6 +4,7 @@ import torch
 
 
 class SiglipVisionModelSO400M(SiglipVisionModel):
+    _repeated_blocks = ["SiglipEncoderLayer"]
     def __init__(self):
         config = SiglipVisionConfig(
             hidden_size=1152,
@@ -64,6 +65,7 @@ class IpAdapterModule(torch.nn.Module):
 
 
 class FluxIpAdapter(torch.nn.Module):
+    _repeated_blocks = ["IpAdapterModule"]
     def __init__(self, num_attention_heads=24, attention_head_dim=128, cross_attention_dim=4096, num_tokens=128, num_blocks=57):
         super().__init__()
         self.ipadapter_modules = torch.nn.ModuleList([IpAdapterModule(num_attention_heads, attention_head_dim, cross_attention_dim) for _ in range(num_blocks)])

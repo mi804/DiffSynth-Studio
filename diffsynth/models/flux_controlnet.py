@@ -60,6 +60,8 @@ def init_weights_on_device(device = torch.device("meta"), include_buffers :bool 
             setattr(torch, torch_function_name, old_torch_function)
 
 class FluxControlNet(torch.nn.Module):
+    _repeated_blocks = ["FluxJointTransformerBlock", "FluxSingleTransformerBlock"]
+
     def __init__(self, disable_guidance_embedder=False, num_joint_blocks=5, num_single_blocks=10, num_mode=0, mode_dict={}, additional_input_dim=0):
         super().__init__()
         self.pos_embedder = RoPEEmbedding(3072, 10000, [16, 56, 56])

@@ -452,6 +452,7 @@ class Head(nn.Module):
 
 
 class WanAnimate2Transformer(nn.Module):
+    _repeated_blocks = ["AttentionBlock", "Incontext_AttentionBlock"]
 
     def __init__(
         self,

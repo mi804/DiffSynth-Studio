@@ -73,6 +73,8 @@ class CLIPEncoderLayer(torch.nn.Module):
     
 
 class FluxTextEncoderClip(torch.nn.Module):
+    _repeated_blocks = ["CLIPEncoderLayer"]
+
     def __init__(self, embed_dim=768, vocab_size=49408, max_position_embeddings=77, num_encoder_layers=12, encoder_intermediate_size=3072):
         super().__init__()
 

@@ -27,6 +27,8 @@ class BlockWiseControlBlock(torch.nn.Module):
 
 
 class QwenImageBlockWiseControlNet(torch.nn.Module):
+    _repeated_blocks = ["BlockWiseControlBlock"]
+
     def __init__(
         self,
         num_layers: int = 60,

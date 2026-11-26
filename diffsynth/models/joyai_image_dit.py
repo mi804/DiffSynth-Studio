@@ -494,6 +494,7 @@ class WanTimeTextImageEmbedding(nn.Module):
 
 
 class JoyAIImageDiT(nn.Module):
+    _repeated_blocks = ["MMDoubleStreamBlock"]
     _supports_gradient_checkpointing = True
 
     def __init__(

@@ -631,6 +631,8 @@ class SingleTokenRefiner(torch.nn.Module):
 
 
 class Qwen2Connector(torch.nn.Module):
+    _repeated_blocks = ["IndividualTokenRefinerBlock"]
+
     def __init__(
         self,
         # biclip_dim=1024,

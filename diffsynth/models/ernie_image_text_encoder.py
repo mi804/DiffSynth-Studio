@@ -16,6 +16,8 @@ class ErnieImageTextEncoder(torch.nn.Module):
     Uses the base model (no lm_head) since the checkpoint only has embeddings.
     """
 
+    _repeated_blocks = ["Ministral3DecoderLayer"]
+
     def __init__(self):
         super().__init__()
         from transformers import Ministral3Config, Ministral3Model

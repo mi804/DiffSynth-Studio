@@ -5,6 +5,7 @@ from transformers import CLIPModel as HFCLIPModel, CLIPConfig
 
 
 class BioCLIPv2Model(HFCLIPModel):
+    _repeated_blocks = ["CLIPEncoderLayer"]
     def __init__(self):
         super().__init__(self._build_config())
 

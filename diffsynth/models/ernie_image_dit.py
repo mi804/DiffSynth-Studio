@@ -250,6 +250,8 @@ class ErnieImageDiT(nn.Module):
     Internal format: [S, B, H] for transformer blocks, [B, S, H] for attention.
     """
 
+    _repeated_blocks = ["ErnieImageSharedAdaLNBlock"]
+
     def __init__(
         self,
         hidden_size: int = 4096,

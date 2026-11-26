@@ -850,6 +850,7 @@ def clip_xlm_roberta_vit_h_14(
 
 
 class WanImageEncoder(torch.nn.Module):
+    _repeated_blocks = ["AttentionBlock"]
 
     def __init__(self):
         super().__init__()

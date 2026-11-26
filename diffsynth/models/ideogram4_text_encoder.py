@@ -66,6 +66,8 @@ _DEFAULT_TEXT_ENCODER_CONFIG = {
 class Ideogram4TextEncoder(nn.Module):
     """Qwen3-VL-8B-Instruct wrapper that extracts hidden states from specific layers."""
 
+    _repeated_blocks = ["Qwen3VLTextDecoderLayer", "Qwen3VLVisionBlock"]
+
     def __init__(self, config_path: str = None, **kwargs) -> None:
         super().__init__()
         from transformers import AutoConfig, AutoModel

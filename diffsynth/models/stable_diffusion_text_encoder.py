@@ -175,6 +175,8 @@ def quick_gelu(x):
 
 
 class SDTextEncoder(torch.nn.Module):
+    _repeated_blocks = ["CLIPEncoderLayer"]
+
     def __init__(
         self,
         hidden_size=768,

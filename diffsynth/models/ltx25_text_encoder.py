@@ -17,6 +17,7 @@ from .ltx2_dit import (
 
 
 class LTX25TextEncoder(Gemma4UnifiedForConditionalGeneration):
+    _repeated_blocks = ["Gemma4UnifiedTextDecoderLayer"]
     def __init__(self):
         config = {
             "architectures": ["Gemma4UnifiedForConditionalGeneration"],
@@ -369,6 +370,8 @@ class LTX25EmbeddingsConnectors(torch.nn.Module):
 
 
 class LTX25TextEncoderPostModules(torch.nn.Module):
+    _repeated_blocks = ["LTX25BasicTransformerBlock1D"]
+
     def __init__(
         self,
         embedding_dim: int = 3840,

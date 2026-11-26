@@ -712,6 +712,8 @@ class Upsample2D(nn.Module):
 # ===== SDXL UNet2DConditionModel =====
 
 class SDXLUNet2DConditionModel(nn.Module):
+    _repeated_blocks = ["BasicTransformerBlock", "ResnetBlock2D"]
+
     def __init__(
         self,
         sample_size=128,

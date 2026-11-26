@@ -165,6 +165,8 @@ class DiffSynthMusicChannelProj(torch.nn.Module):
 
 
 class DiffSynthMusicDiTModel(torch.nn.Module):
+    _repeated_blocks = ["DiffSynthMusicDiTLayer"]
+
     def __init__(self, dim=2560, dim_mlp=9728, dim_condition=2048, num_blocks=32, num_heads_q=32, num_heads_kv=8, head_dim=128, window_size=128, patch_size=2):
         super().__init__()
         self.rotary_emb = Qwen3RotaryEmbedding(type('RopeConfig', (), {'head_dim': head_dim, 'max_position_embeddings': 32768, 'rope_theta': 1000000, 'rope_parameters': {'rope_type': 'default', 'rope_theta': 1000000}})())

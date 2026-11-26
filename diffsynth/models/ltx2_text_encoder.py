@@ -9,6 +9,7 @@ from .ltx2_common import rms_norm
 
 
 class LTX2TextEncoder(Gemma3ForConditionalGeneration):
+    _repeated_blocks = ["Gemma3DecoderLayer"]
     def __init__(self):
         config = Gemma3Config(
             **{
@@ -404,6 +405,8 @@ class Embeddings1DConnector(nn.Module):
 
 
 class LTX2TextEncoderPostModules(nn.Module):
+    _repeated_blocks = ["_BasicTransformerBlock1D"]
+
     def __init__(
         self,
         separated_audio_video: bool = False,

@@ -9,6 +9,7 @@ from diffsynth.core.device.npu_compatible_device import get_device_type
 
 
 class Siglip2ImageEncoder(SiglipVisionModel):
+    _repeated_blocks = ["SiglipEncoderLayer"]
     def __init__(self):
         from transformers.models.siglip.modeling_siglip import SiglipVisionConfig
         from transformers import SiglipImageProcessor
@@ -78,6 +79,7 @@ class Siglip2ImageEncoder(SiglipVisionModel):
 
 
 class Siglip2ImageEncoder428M(Siglip2VisionModel):
+    _repeated_blocks = ["Siglip2EncoderLayer"]
     def __init__(self):
         from transformers import Siglip2VisionConfig, Siglip2ImageProcessor
         config = Siglip2VisionConfig(

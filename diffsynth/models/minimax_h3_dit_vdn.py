@@ -771,6 +771,8 @@ class MiniMaxH3VDNBranchBlock(nn.Module):
 
 
 class MiniMaxH3VDNBranch(nn.Module):
+    _repeated_blocks = ["MiniMaxH3VDNBranchBlock"]
+
     def __init__(
         self, num_layers=50, hidden_size=5376, num_attention_heads=56, attention_head_dim=128,
         delta_rule="vdn_solve", bridge="alpha", a_fp32=True, short_conv=("k", "v"),

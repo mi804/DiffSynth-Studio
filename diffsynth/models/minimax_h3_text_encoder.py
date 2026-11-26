@@ -14,6 +14,8 @@ QWEN_TEMPORAL_PATCH = 2
 MINIMAX_SUPPORTED_FPS = 24
 
 class MiniMaxH3TextEncoder(torch.nn.Module):
+    _repeated_blocks = ["Qwen3VLTextDecoderLayer", "Qwen3VLVisionBlock"]
+
     def __init__(self, num_retained_layers: int = 50):
         super().__init__()
         self.num_retained_layers = num_retained_layers

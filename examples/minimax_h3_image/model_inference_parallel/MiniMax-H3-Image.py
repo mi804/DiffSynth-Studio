@@ -4,7 +4,7 @@ from diffsynth.pipelines.minimax_h3_image import MiniMaxH3ImagePipeline, ModelCo
 from diffsynth.core.quant import QuantizeConfig
 from PIL import Image
 import torch.distributed as dist
-from diffsynth.core.distributed import ParallelConfig, SequenceParallelConfig
+from diffsynth.core.distributed import ParallelConfig, SequenceParallelConfig, FSDPConfig
 
 
 pipe = MiniMaxH3ImagePipeline.from_pretrained(
@@ -17,8 +17,7 @@ pipe = MiniMaxH3ImagePipeline.from_pretrained(
         ModelConfig(model_id="MiniMax/MiniMax-H3-Image", origin_file_pattern="vae/diffusion_pytorch_model.safetensors"),
     ],
     processor_config=ModelConfig(model_id="MiniMax/MiniMax-H3-Image", origin_file_pattern="processor/"),
-    vram_limit=torch.cuda.mem_get_info("cuda")[1] / (1024 ** 3) - 2,
-    parallel_config=ParallelConfig(sequence=SequenceParallelConfig(backend="ulysses")),
+    parallel_config=ParallelConfig(sequence=SequenceParallelConfig(backend="ulysses"), fsdp=FSDPConfig()),
 )
 
 prompt = (

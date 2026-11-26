@@ -20,6 +20,7 @@ def _feature_tensor(output, feature_name: str):
 
 
 class ImageMetricsCLIPModel(HFCLIPModel):
+    _repeated_blocks = ["CLIPEncoderLayer"]
     def __init__(self, variant: str = "h14"):
         super().__init__(self.config(variant))
 

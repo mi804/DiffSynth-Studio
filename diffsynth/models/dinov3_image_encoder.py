@@ -8,6 +8,7 @@ from ..core.device.npu_compatible_device import get_device_type
 
 
 class DINOv3ImageEncoder(DINOv3ViTModel):
+    _repeated_blocks = ["DINOv3ViTLayer"]
     def __init__(self):
         from transformers.models.dinov3_vit.modeling_dinov3_vit import DINOv3ViTConfig
         from transformers import DINOv3ViTImageProcessor

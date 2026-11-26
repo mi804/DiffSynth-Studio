@@ -358,6 +358,7 @@ class WanS2VDiTBlock(DiTBlock):
 
 
 class WanS2VModel(torch.nn.Module):
+    _repeated_blocks = ["WanS2VDiTBlock"]
 
     def __init__(
         self,

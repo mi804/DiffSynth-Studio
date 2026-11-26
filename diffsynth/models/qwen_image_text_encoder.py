@@ -3,6 +3,8 @@ from typing import Optional, Union
 
 
 class QwenImageTextEncoder(torch.nn.Module):
+    _repeated_blocks = ["Qwen2_5_VLDecoderLayer", "Qwen2_5_VLVisionBlock"]
+
     def __init__(self):
         super().__init__()
         from transformers import Qwen2_5_VLConfig, Qwen2_5_VLModel

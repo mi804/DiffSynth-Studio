@@ -17,6 +17,8 @@ class _MOSSImageRotaryEmbedding(Qwen3_5TextRotaryEmbedding):
 
 
 class MOSSImageTextEncoder(torch.nn.Module):
+    _repeated_blocks = ["Qwen3_5DecoderLayer"]
+
     def __init__(self):
         super().__init__()
         config = Qwen3_5TextConfig(**{

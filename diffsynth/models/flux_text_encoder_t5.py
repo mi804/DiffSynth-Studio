@@ -3,6 +3,7 @@ from transformers import T5EncoderModel, T5Config
 
 
 class FluxTextEncoderT5(T5EncoderModel):
+    _repeated_blocks = ["T5Block"]
     def __init__(self):
         config = T5Config(**{
             "architectures": [

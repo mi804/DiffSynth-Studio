@@ -3,6 +3,8 @@ from torch import Tensor
 
 
 class Krea2TextEncoder(torch.nn.Module):
+    _repeated_blocks = ["Qwen3VLTextDecoderLayer", "Qwen3VLVisionBlock"]
+
     def __init__(self):
         super().__init__()
         from transformers import Qwen3VLConfig, Qwen3VLForConditionalGeneration

@@ -3,6 +3,7 @@ import torch.nn as nn
 
 
 class MiniMaxMusic3TextEncoder(nn.Module):
+    _repeated_blocks = ["Qwen3DecoderLayer"]
 
     def __init__(
         self,

@@ -4,32 +4,21 @@ from PIL import Image
 from diffsynth.pipelines.mova_audio_video import ModelConfig, MovaAudioVideoPipeline
 from diffsynth.utils.data.audio_video import write_video_audio
 import torch.distributed as dist
-from diffsynth.core.distributed import ParallelConfig, SequenceParallelConfig, CFGParallelConfig
-
-vram_config = {
-    "offload_dtype": torch.bfloat16,
-    "offload_device": "cpu",
-    "onload_dtype": torch.bfloat16,
-    "onload_device": "cuda",
-    "preparing_dtype": torch.bfloat16,
-    "preparing_device": "cuda",
-    "computation_dtype": torch.bfloat16,
-    "computation_device": "cuda",
-}
+from diffsynth.core.distributed import ParallelConfig, SequenceParallelConfig, CFGParallelConfig, FSDPConfig
 pipe = MovaAudioVideoPipeline.from_pretrained(
     torch_dtype=torch.bfloat16,
     device="cuda",
     model_configs=[
-        ModelConfig(model_id="openmoss/MOVA-360p", origin_file_pattern="video_dit/diffusion_pytorch_model-*.safetensors", **vram_config),
-        ModelConfig(model_id="openmoss/MOVA-360p", origin_file_pattern="video_dit_2/diffusion_pytorch_model-*.safetensors", **vram_config),
-        ModelConfig(model_id="openmoss/MOVA-360p", origin_file_pattern="audio_dit/diffusion_pytorch_model.safetensors", **vram_config),
-        ModelConfig(model_id="openmoss/MOVA-360p", origin_file_pattern="dual_tower_bridge/diffusion_pytorch_model.safetensors", **vram_config),
-        ModelConfig(model_id="openmoss/MOVA-720p", origin_file_pattern="audio_vae/diffusion_pytorch_model.safetensors", **vram_config),
-        ModelConfig(model_id="DiffSynth-Studio/Wan-Series-Converted-Safetensors", origin_file_pattern="Wan2.1_VAE.safetensors", **vram_config),
-        ModelConfig(model_id="DiffSynth-Studio/Wan-Series-Converted-Safetensors", origin_file_pattern="models_t5_umt5-xxl-enc-bf16.safetensors", **vram_config),
+        ModelConfig(model_id="openmoss/MOVA-360p", origin_file_pattern="video_dit/diffusion_pytorch_model-*.safetensors"),
+        ModelConfig(model_id="openmoss/MOVA-360p", origin_file_pattern="video_dit_2/diffusion_pytorch_model-*.safetensors"),
+        ModelConfig(model_id="openmoss/MOVA-360p", origin_file_pattern="audio_dit/diffusion_pytorch_model.safetensors"),
+        ModelConfig(model_id="openmoss/MOVA-360p", origin_file_pattern="dual_tower_bridge/diffusion_pytorch_model.safetensors"),
+        ModelConfig(model_id="openmoss/MOVA-720p", origin_file_pattern="audio_vae/diffusion_pytorch_model.safetensors"),
+        ModelConfig(model_id="DiffSynth-Studio/Wan-Series-Converted-Safetensors", origin_file_pattern="Wan2.1_VAE.safetensors"),
+        ModelConfig(model_id="DiffSynth-Studio/Wan-Series-Converted-Safetensors", origin_file_pattern="models_t5_umt5-xxl-enc-bf16.safetensors"),
     ],
     tokenizer_config=ModelConfig(model_id="openmoss/MOVA-720p", origin_file_pattern="tokenizer/"),
-    parallel_config=ParallelConfig(sequence=SequenceParallelConfig(backend="ulysses"), cfg=CFGParallelConfig()),
+    parallel_config=ParallelConfig(sequence=SequenceParallelConfig(backend="ulysses"), cfg=CFGParallelConfig(), fsdp=FSDPConfig()),
 )
 negative_prompt = (
     "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，"

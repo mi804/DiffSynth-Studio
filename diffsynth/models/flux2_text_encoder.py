@@ -2,6 +2,8 @@ from transformers import Mistral3ForConditionalGeneration, Mistral3Config
 
 
 class Flux2TextEncoder(Mistral3ForConditionalGeneration):
+    _repeated_blocks = ["MistralDecoderLayer", "PixtralAttentionLayer"]
+
     def __init__(self):
         config = Mistral3Config(**{
             "architectures": [

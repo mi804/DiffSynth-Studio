@@ -92,6 +92,8 @@ class MotWanAttentionBlock(DiTBlock):
 
 
 class MotWanModel(torch.nn.Module):
+    _repeated_blocks = ["MotWanAttentionBlock"]
+
     def __init__(
         self,
         mot_layers=(0, 4, 8, 12, 16, 20, 24, 28, 32, 36),

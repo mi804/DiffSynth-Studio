@@ -3,6 +3,8 @@ from PIL import Image
 
 
 class NexusGenAutoregressiveModel(torch.nn.Module):
+    _repeated_blocks = ["Qwen2_5_VLDecoderLayer", "Qwen2_5_VLVisionBlock"]
+
     def __init__(self, max_length=1024, max_pixels=262640):
         super(NexusGenAutoregressiveModel, self).__init__()
         from .nexus_gen_ar_model import Qwen2_5_VLForConditionalGeneration

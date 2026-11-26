@@ -627,6 +627,8 @@ class LongCatSingleStreamBlock(nn.Module):
 
 
 class LongCatVideoTransformer3DModel(torch.nn.Module):
+    _repeated_blocks = ["LongCatSingleStreamBlock"]
+
     def __init__(
         self,
         in_channels: int = 16,

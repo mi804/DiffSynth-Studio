@@ -25,6 +25,8 @@ class CLIPTextModelWithProjection(torch.nn.Module):
 
 
 class SDXLTextEncoder2(torch.nn.Module):
+    _repeated_blocks = ["CLIPEncoderLayer"]
+
     def __init__(
         self,
         hidden_size=1280,

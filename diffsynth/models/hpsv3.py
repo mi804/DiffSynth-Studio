@@ -190,6 +190,7 @@ class HPSv3RewardModelMixin:
 
 
 class HPSv3Qwen2VLRewardModel(HPSv3RewardModelMixin, Qwen2VLForConditionalGeneration):
+    _repeated_blocks = ["Qwen2VLDecoderLayer", "Qwen2VLVisionBlock"]
     def __init__(
         self,
         config=None,

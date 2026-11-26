@@ -266,6 +266,8 @@ class Lambda(nn.Module):
 
 
 class AceStepDiTModel(nn.Module):
+    _repeated_blocks = ["AceStepDiTLayer"]
+
     def __init__(
         self,
         hidden_size: int = 2048,

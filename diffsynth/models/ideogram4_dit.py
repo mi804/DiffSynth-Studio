@@ -354,6 +354,8 @@ class Ideogram4FinalLayer(nn.Module):
 class Ideogram4DiT(nn.Module):
     """Ideogram 4 flow-matching transformer."""
 
+    _repeated_blocks = ["Ideogram4TransformerBlock"]
+
     def __init__(self, config: Ideogram4Config | dict = None, **kwargs) -> None:
         super().__init__()
         if config is None:

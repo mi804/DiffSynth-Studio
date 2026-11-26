@@ -719,6 +719,8 @@ class UNet2DConditionModel(nn.Module):
     """Stable Diffusion UNet with cross-attention conditioning.
     state_dict keys match the diffusers UNet2DConditionModel checkpoint format.
     """
+    _repeated_blocks = ["BasicTransformerBlock", "ResnetBlock2D"]
+
     def __init__(
         self,
         sample_size=64,

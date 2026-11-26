@@ -2,6 +2,8 @@ import torch
 
 
 class AceStepTextEncoder(torch.nn.Module):
+    _repeated_blocks = ["Qwen3DecoderLayer"]
+
     def __init__(
         self,
     ):
