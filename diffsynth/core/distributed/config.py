@@ -23,9 +23,15 @@ class CFGParallelConfig:
 
 
 @dataclass(frozen=True)
+class FSDPConfig:
+    components: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class ParallelConfig:
     sequence: SequenceParallelConfig | None = None
     cfg: CFGParallelConfig | None = None
+    fsdp: FSDPConfig | None = None
     timeout_seconds: int = 1800
 
     def __post_init__(self):
@@ -39,3 +45,7 @@ class ParallelConfig:
     @property
     def cfg_enabled(self) -> bool:
         return self.cfg is not None
+
+    @property
+    def fsdp_enabled(self) -> bool:
+        return self.fsdp is not None

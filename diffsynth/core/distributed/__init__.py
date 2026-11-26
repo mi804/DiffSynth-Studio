@@ -1,4 +1,4 @@
-from .config import ParallelConfig, SequenceParallelConfig, CFGParallelConfig
+from .config import ParallelConfig, SequenceParallelConfig, CFGParallelConfig, FSDPConfig
 from .context import ParallelContext, parallel_context, init_parallel, destroy_parallel
 from .collectives import all_gather_sequence, all_to_all_4d
 from .sp_state import SequenceParallelState, current_sequence_parallel_state, sequence_parallel_disabled
@@ -9,6 +9,7 @@ __all__ = [
     "ParallelConfig",
     "SequenceParallelConfig",
     "CFGParallelConfig",
+    "FSDPConfig",
     "init_parallel",
     "destroy_parallel",
     "ParallelContext",

@@ -370,14 +370,10 @@ class SequenceParallelStack:
 
 
 def _declared_class(module):
-    """The sequence-parallel class of `module`, unwrapping framework wrappers.
-
-    A wrapper (`AutoWrappedNonRecurseModule`, `FSDP[Original]`) keeps the real class
-    in `.module`. Only the class's own declaration counts, not an inherited one.
-    """
-    cls = type(module)
-    if "_sequence_parallel_recipe" in cls.__dict__:
-        return cls
+    """The class declaring the sequence-parallel recipe, searching the MRO and unwrapping wrappers."""
+    for base in type(module).__mro__:
+        if "_sequence_parallel_recipe" in base.__dict__:
+            return base
     inner = getattr(module, "module", None)
     if isinstance(inner, torch.nn.Module):
         return _declared_class(inner)

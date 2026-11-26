@@ -2,6 +2,8 @@ from ..vram.initialization import skip_model_initialization
 from ..vram.disk_map import DiskMap
 from ..vram.layers import enable_vram_management
 from .file import load_state_dict, load_metadata_from_safetensors
+from ..distributed import parallel_context
+from ..distributed.fsdp2 import apply_fsdp2, load_sharded_state_dict, move_replicated_to_device
 import torch
 import sys
 from contextlib import ExitStack
@@ -14,12 +16,14 @@ def is_deepspeed_zero3_enabled():
     return _is_deepspeed_zero3_enabled()
 
 
-def load_model(model_class, path, config=None, torch_dtype=torch.bfloat16, device="cpu", state_dict_converter=None, use_disk_map=False, module_map=None, vram_config=None, vram_limit=None, state_dict=None, quantize=None):
+def load_model(model_class, path, config=None, torch_dtype=torch.bfloat16, device="cpu", state_dict_converter=None, use_disk_map=False, module_map=None, vram_config=None, vram_limit=None, state_dict=None, quantize=None, fsdp=False):
     config = {} if config is None else config
     with ExitStack() as stack:
         for init_context in get_init_context(torch_dtype=torch_dtype, device=device):
             stack.enter_context(init_context)
         model = model_class(**config)
+    if fsdp:
+        return _load_model_fsdp2(model, path, torch_dtype, state_dict_converter, use_disk_map, state_dict, device)
     # What is `module_map`?
     # This is a module mapping table for VRAM management.
     if module_map is not None and quantize is None:
@@ -130,6 +134,30 @@ def load_model(model_class, path, config=None, torch_dtype=torch.bfloat16, devic
     if quantize is not None:
         # Downstream steps (e.g. LoRA hot-loading) need the config to handle the quantized layers.
         model.quantize_config = quantize
+    if hasattr(model, "eval"):
+        model = model.eval()
+    return model
+
+
+def _load_model_fsdp2(model, path, torch_dtype, state_dict_converter, use_disk_map, state_dict, device):
+    apply_fsdp2(model)
+
+    # Only the shard group's rank0 reads the checkpoint; it is broadcast to the rest.
+    if parallel_context.get_fsdp_rank() == 0:
+        if state_dict is None:
+            state_dict = (
+                DiskMap(path, "cpu", torch_dtype=torch_dtype) if use_disk_map
+                else load_state_dict(path, torch_dtype, "cpu")
+            )
+        if state_dict_converter is not None:
+            state_dict = state_dict_converter(state_dict)
+        else:
+            state_dict = {name: state_dict[name] for name in state_dict}
+    else:
+        state_dict = {}
+
+    load_sharded_state_dict(model, state_dict)
+    move_replicated_to_device(model, device)
     if hasattr(model, "eval"):
         model = model.eval()
     return model

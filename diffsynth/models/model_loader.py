@@ -1,7 +1,8 @@
 from ..core.loader import load_model, hash_model_file
 from ..core.vram import AutoWrappedModule
 from ..core.quant import QuantizeConfig, MixedQuantizeConfig
-from ..core.distributed import install_sequence_parallel
+from ..core.distributed import install_sequence_parallel, parallel_context
+from ..core.distributed.fsdp2 import resolve_block_types
 from ..configs import MODEL_CONFIGS, VRAM_MANAGEMENT_MODULE_MAPS, VERSION_CHECKER_MAPS
 import importlib, json, torch
 
@@ -32,7 +33,17 @@ class ModelPool:
             module_map = None
         return module_map
     
-    def load_model_file(self, config, path, vram_config, vram_limit=None, state_dict=None, quantize=None):
+    def should_shard_fsdp(self, model_name, model_class, parallel_config):
+        if parallel_config is None or not parallel_config.fsdp_enabled:
+            return False
+        components = parallel_config.fsdp.components
+        if components and model_name not in components:
+            return False
+        if not resolve_block_types(model_class):
+            return False
+        return parallel_context.get_fsdp_mesh() is not None
+
+    def load_model_file(self, config, path, vram_config, vram_limit=None, state_dict=None, quantize=None, parallel_config=None):
         model_class = self.import_model_class(config["model_class"])
         # Resolve the quant config only after the model class import: a model file may
         # register its own method/backend at import time (e.g. `ideogram4_fp8`), and
@@ -43,6 +54,11 @@ class ModelPool:
             state_dict_converter = self.import_model_class(config["state_dict_converter"])
         else:
             state_dict_converter = None
+        shard = self.should_shard_fsdp(config["model_name"], model_class, parallel_config)
+        if shard and self.need_to_enable_vram_management(vram_config):
+            raise ValueError(f"{config['model_name']}: FSDP2 cannot be combined with VRAM management")
+        if shard and quantize is not None:
+            raise ValueError(f"{config['model_name']}: FSDP2 cannot be combined with quantization")
         module_map = self.fetch_module_map(config["model_class"], vram_config)
         model = load_model(
             model_class, path, model_config,
@@ -53,7 +69,9 @@ class ModelPool:
             vram_config=vram_config, module_map=module_map, vram_limit=vram_limit,
             state_dict=state_dict,
             quantize=quantize,
+            fsdp=shard,
         )
+        install_sequence_parallel(model, parallel_config)
         return model
 
     def default_vram_config(self):
@@ -89,9 +107,8 @@ class ModelPool:
         loaded = False
         for config in MODEL_CONFIGS:
             if config["model_hash"] == model_hash:
-                model = self.load_model_file(config, path, vram_config, vram_limit=vram_limit, state_dict=state_dict, quantize=quantize)
+                model = self.load_model_file(config, path, vram_config, vram_limit=vram_limit, state_dict=state_dict, quantize=quantize, parallel_config=parallel_config)
                 if clear_parameters: self.clear_parameters(model)
-                install_sequence_parallel(model, parallel_config)
                 self.model.append(model)
                 model_name = config["model_name"]
                 self.model_name.append(model_name)

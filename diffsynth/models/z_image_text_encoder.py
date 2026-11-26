@@ -3,6 +3,8 @@ import torch
 
 
 class ZImageTextEncoder(torch.nn.Module):
+    _no_split_modules = ["Qwen3DecoderLayer"]
+
     def __init__(self, model_size="4B"):
         super().__init__()
         config_dict = {

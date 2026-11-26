@@ -89,6 +89,8 @@ class BasePipeline(torch.nn.Module):
         
         
     def to(self, *args, **kwargs):
+        if self.parallel_config is not None and self.parallel_config.fsdp_enabled:
+            raise ValueError("FSDP2-sharded weights cannot be moved or retyped by `.to()`.")
         device, dtype, non_blocking, convert_to_format = torch._C._nn._parse_to(*args, **kwargs)
         if device is not None:
             self.device = device

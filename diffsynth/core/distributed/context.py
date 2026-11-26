@@ -24,7 +24,7 @@ class ParallelContext:
         return self.world
 
     def get_sequence_group(self) -> dist.ProcessGroup | None:
-        """The axis sequence parallelism exchanges on; the world group when CFG is off."""
+        """The sequence axis group, or None when sequence parallelism is off."""
         return self.sequence
 
     def get_cfg_group(self) -> dist.ProcessGroup | None:
@@ -43,6 +43,17 @@ class ParallelContext:
     def get_cfg_world_size(self) -> int:
         return 1 if self.cfg is None else dist.get_world_size(self.cfg)
 
+    def get_fsdp_mesh(self):
+        """The sequence-axis sub-mesh, or None when it has one rank."""
+        if self.mesh is None or self.mesh["sequence"].size() <= 1:
+            return None
+        return self.mesh["sequence"]
+
+    def get_fsdp_rank(self) -> int:
+        """This rank's position within its FSDP shard group."""
+        mesh = self.get_fsdp_mesh()
+        return 0 if mesh is None else dist.get_rank(mesh.get_group())
+
     def build_axes(self, parallel_config):
         self.world = dist.group.WORLD
         self.sequence = self.cfg = self.mesh = None
@@ -56,15 +67,14 @@ class ParallelContext:
             raise ValueError(f"world size {world_size} must be divisible by cfg size {cfg_size}")
         sp_size = world_size // cfg_size
 
-        if cfg_size > 1 and sp_size > 1:
-            # Outermost axis first, so the sequence axis gets adjacent ranks.
-            self.mesh = init_device_mesh(
-                get_device_type(), (cfg_size, sp_size), mesh_dim_names=("cfg", "sequence"),
-            )
+        # Build the (cfg, sequence) mesh and derive each enabled axis's group from it.
+        self.mesh = init_device_mesh(
+            get_device_type(), (cfg_size, sp_size), mesh_dim_names=("cfg", "sequence"),
+        )
         if cfg_size > 1:
-            self.cfg = self.mesh["cfg"].get_group() if self.mesh is not None else self.world
+            self.cfg = self.mesh["cfg"].get_group()
         if sequence_enabled and sp_size > 1:
-            self.sequence = self.mesh["sequence"].get_group() if self.mesh is not None else self.world
+            self.sequence = self.mesh["sequence"].get_group()
 
     def clear(self):
         self.world = self.sequence = self.cfg = self.mesh = None
